@@ -1,0 +1,72 @@
+/*
+ * Copyright (C) 2025 EPAM Systems, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <common/logger/logmodule.hpp>
+
+#include "tlscredentials.hpp"
+
+namespace aos::common::iamclient {
+/***********************************************************************************************************************
+ * Public
+ **********************************************************************************************************************/
+
+Error TLSCredentials::Init(const std::string& caCert, aos::iamclient::CertProviderItf& certProvider,
+    crypto::CertLoaderItf& certLoader, crypto::x509::ProviderItf& cryptoProvider)
+{
+    mCertProvider   = &certProvider;
+    mCACert         = caCert;
+    mCertLoader     = &certLoader;
+    mCryptoProvider = &cryptoProvider;
+
+    return ErrorEnum::eNone;
+}
+
+RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetMTLSClientCredentials(
+    const String& certStorage)
+{
+    CertInfo certInfo;
+
+    LOG_DBG() << "Get MTLS config: certStorage=" << certStorage;
+
+    if (auto err = mCertProvider->GetCert(certStorage, {}, {}, certInfo); !err.IsNone()) {
+        return {nullptr, err};
+    }
+
+    return {common::utils::GetMTLSClientCredentials(certInfo, mCACert.c_str(), *mCertLoader, *mCryptoProvider),
+        ErrorEnum::eNone};
+}
+
+RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetTLSClientCredentials()
+{
+    LOG_DBG() << "Get TLS config";
+
+    if (!mCACert.empty()) {
+        return {common::utils::GetTLSClientCredentials(mCACert.c_str()), ErrorEnum::eNone};
+    }
+
+    return {nullptr, ErrorEnum::eNone};
+}
+
+RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetChannelCredentials(bool insecureConnection)
+{
+    if (insecureConnection) {
+        return {grpc::InsecureChannelCredentials(), ErrorEnum::eNone};
+    }
+
+    return GetTLSClientCredentials();
+}
+
+RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetChannelCredentials(
+    const String& certStorage, bool insecureConnection)
+{
+    if (insecureConnection) {
+        return {grpc::InsecureChannelCredentials(), ErrorEnum::eNone};
+    }
+
+    return GetMTLSClientCredentials(certStorage);
+}
+
+} // namespace aos::common::iamclient
