@@ -16,6 +16,8 @@ namespace aos::common::iamclient {
 Error TLSCredentials::Init(const std::string& caCert, aos::iamclient::CertProviderItf& certProvider,
     crypto::CertLoaderItf& certLoader, crypto::x509::ProviderItf& cryptoProvider)
 {
+    LOG_DBG() << "Init TLS credentials";
+
     mCertProvider   = &certProvider;
     mCACert         = caCert;
     mCertLoader     = &certLoader;
@@ -25,11 +27,15 @@ Error TLSCredentials::Init(const std::string& caCert, aos::iamclient::CertProvid
 }
 
 RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetMTLSClientCredentials(
-    const String& certStorage)
+    const String& certStorage, bool insecureConnection)
 {
-    CertInfo certInfo;
+    LOG_DBG() << "Get MTLS config" << Log::Field("certStorage", certStorage);
 
-    LOG_DBG() << "Get MTLS config: certStorage=" << certStorage;
+    if (insecureConnection) {
+        return {grpc::InsecureChannelCredentials(), ErrorEnum::eNone};
+    }
+
+    CertInfo certInfo;
 
     if (auto err = mCertProvider->GetCert(certStorage, {}, {}, certInfo); !err.IsNone()) {
         return {nullptr, err};
@@ -39,34 +45,19 @@ RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetMTLSC
         ErrorEnum::eNone};
 }
 
-RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetTLSClientCredentials()
+RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetTLSClientCredentials(bool insecureConnection)
 {
     LOG_DBG() << "Get TLS config";
+
+    if (insecureConnection) {
+        return {grpc::InsecureChannelCredentials(), ErrorEnum::eNone};
+    }
 
     if (!mCACert.empty()) {
         return {common::utils::GetTLSClientCredentials(mCACert.c_str()), ErrorEnum::eNone};
     }
 
     return {nullptr, ErrorEnum::eNone};
-}
-
-RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetChannelCredentials(bool insecureConnection)
-{
-    if (insecureConnection) {
-        return {grpc::InsecureChannelCredentials(), ErrorEnum::eNone};
-    }
-
-    return GetTLSClientCredentials();
-}
-
-RetWithError<std::shared_ptr<grpc::ChannelCredentials>> TLSCredentials::GetChannelCredentials(
-    const String& certStorage, bool insecureConnection)
-{
-    if (insecureConnection) {
-        return {grpc::InsecureChannelCredentials(), ErrorEnum::eNone};
-    }
-
-    return GetMTLSClientCredentials(certStorage);
 }
 
 } // namespace aos::common::iamclient

@@ -29,35 +29,21 @@ public:
      * Gets MTLS configuration.
      *
      * @param certStorage Certificate storage.
+     * @param insecureConnection If true, returns insecure credentials.
      * @return MTLS credentials.
      */
-    virtual RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetMTLSClientCredentials(const String& certStorage)
+    virtual RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetMTLSClientCredentials(
+        const String& certStorage, bool insecureConnection = false)
         = 0;
 
     /**
      * Gets TLS credentials.
      *
+     * @param insecureConnection If true, returns insecure credentials.
      * @return TLS credentials.
      */
-    virtual RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetTLSClientCredentials() = 0;
-
-    /**
-     * Gets gRPC channel credentials for TLS connection (public services).
-     *
-     * @param insecureConnection If true, returns insecure credentials.
-     * @return Channel credentials.
-     */
-    virtual RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetChannelCredentials(bool insecureConnection) = 0;
-
-    /**
-     * Gets gRPC channel credentials for MTLS connection (private services).
-     *
-     * @param certStorage Certificate storage.
-     * @param insecureConnection If true, returns insecure credentials.
-     * @return Channel credentials.
-     */
-    virtual RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetChannelCredentials(
-        const String& certStorage, bool insecureConnection)
+    virtual RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetTLSClientCredentials(
+        bool insecureConnection = false)
         = 0;
 };
 

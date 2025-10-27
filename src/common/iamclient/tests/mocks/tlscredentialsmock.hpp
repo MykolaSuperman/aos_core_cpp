@@ -18,15 +18,10 @@
  */
 class TLSCredentialsMock : public aos::common::iamclient::TLSCredentialsItf {
 public:
-    MOCK_METHOD(aos::RetWithError<std::shared_ptr<grpc::ChannelCredentials>>, GetTLSClientCredentials, (), (override));
-
-    MOCK_METHOD(aos::RetWithError<std::shared_ptr<grpc::ChannelCredentials>>, GetMTLSClientCredentials,
-        (const aos::String& certStorage), (override));
-
-    MOCK_METHOD(aos::RetWithError<std::shared_ptr<grpc::ChannelCredentials>>, GetChannelCredentials,
+    MOCK_METHOD(aos::RetWithError<std::shared_ptr<grpc::ChannelCredentials>>, GetTLSClientCredentials,
         (bool insecureConnection), (override));
 
-    MOCK_METHOD(aos::RetWithError<std::shared_ptr<grpc::ChannelCredentials>>, GetChannelCredentials,
+    MOCK_METHOD(aos::RetWithError<std::shared_ptr<grpc::ChannelCredentials>>, GetMTLSClientCredentials,
         (const aos::String& certStorage, bool insecureConnection), (override));
 };
 

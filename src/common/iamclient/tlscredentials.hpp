@@ -25,7 +25,7 @@ namespace aos::common::iamclient {
 class TLSCredentials : public TLSCredentialsItf {
 public:
     /**
-     * Initializes.
+     * Initializes TLS credentials.
      *
      * @param mtlsCredentialsFunc MTLS credentials function.
      * @return Error.
@@ -37,35 +37,19 @@ public:
      * Gets MTLS configuration.
      *
      * @param certStorage Certificate storage.
+     * @param insecureConnection If true, returns insecure credentials.
      * @return MTLS credentials.
      */
     RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetMTLSClientCredentials(
-        const String& certStorage) override;
+        const String& certStorage, bool insecureConnection) override;
 
     /**
      * Gets TLS credentials.
      *
+     * @param insecureConnection If true, returns insecure credentials.
      * @return TLS credentials.
      */
-    RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetTLSClientCredentials() override;
-
-    /**
-     * Gets gRPC channel credentials for TLS connection (public services).
-     *
-     * @param insecureConnection If true, returns insecure credentials.
-     * @return Channel credentials.
-     */
-    RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetChannelCredentials(bool insecureConnection) override;
-
-    /**
-     * Gets gRPC channel credentials for MTLS connection (private services).
-     *
-     * @param certStorage Certificate storage.
-     * @param insecureConnection If true, returns insecure credentials.
-     * @return Channel credentials.
-     */
-    RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetChannelCredentials(
-        const String& certStorage, bool insecureConnection) override;
+    RetWithError<std::shared_ptr<grpc::ChannelCredentials>> GetTLSClientCredentials(bool insecureConnection) override;
 
 private:
     aos::iamclient::CertProviderItf* mCertProvider {};
