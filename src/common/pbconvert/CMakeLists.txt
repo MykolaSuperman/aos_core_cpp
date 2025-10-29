@@ -20,6 +20,10 @@ if(WITH_IAM_API)
     list(APPEND SOURCES iam.cpp)
 endif()
 
+if(WITH_SM_API)
+    list(APPEND SOURCES sm.cpp)
+endif()
+
 # ######################################################################################################################
 # Compile options
 # ######################################################################################################################
@@ -33,7 +37,7 @@ set(COMPILE_OPTIONS -Wno-format-truncation)
 set(LIBRARIES aos::common::utils Poco::Util)
 
 if(WITH_IAM_API)
-    list(APPEND LIBRARIES aos::api::iam)
+    list(APPEND LIBRARIES aos::api::iam aos::api::sm aos::common::jsonprovider)
 endif()
 
 # ######################################################################################################################
