@@ -1,44 +1,25 @@
 #
-# Copyright (C) 2024 EPAM Systems, Inc.
+# Copyright (C) 2025 EPAM Systems, Inc.
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-
 # ######################################################################################################################
 # Target name
 # ######################################################################################################################
 
-set(TARGET_NAME pbconvert)
+set(TARGET_NAME smcontroller)
 
 # ######################################################################################################################
 # Sources
 # ######################################################################################################################
 
-set(SOURCES common.cpp)
-
-if(WITH_IAM_API)
-    list(APPEND SOURCES iam.cpp)
-endif()
-
-if(WITH_SM_API)
-    list(APPEND SOURCES sm.cpp)
-endif()
-
-# ######################################################################################################################
-# Compile options
-# ######################################################################################################################
-
-set(COMPILE_OPTIONS -Wno-format-truncation)
+set(SOURCES smcontroller.cpp nodehandler.cpp)
 
 # ######################################################################################################################
 # Libraries
 # ######################################################################################################################
 
-set(LIBRARIES aos::common::utils Poco::Util)
-
-if(WITH_IAM_API)
-    list(APPEND LIBRARIES aos::api::iam aos::api::sm aos::common::jsonprovider)
-endif()
+set(LIBRARIES aos::common::logger aos::common::utils aos::common::pbconvert aos::api::sm aos::core::common::alerts)
 
 # ######################################################################################################################
 # Target
@@ -52,8 +33,6 @@ add_module(
     ${AOS_STACK_USAGE}
     SOURCES
     ${SOURCES}
-    COMPILE_OPTIONS
-    ${COMPILE_OPTIONS}
     LIBRARIES
     ${LIBRARIES}
 )
@@ -62,6 +41,6 @@ add_module(
 # Tests
 # ######################################################################################################################
 
-if(WITH_TEST)
-    add_subdirectory(tests)
-endif()
+# if(WITH_TEST)
+#     add_subdirectory(tests)
+# endif()
