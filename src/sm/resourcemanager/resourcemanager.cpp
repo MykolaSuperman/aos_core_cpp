@@ -113,7 +113,9 @@ Error ResourceManager::ParseResourceInfos()
 {
     std::ifstream file(mConfig.mResourceInfoFilePath.CStr());
     if (!file.is_open()) {
-        return AOS_ERROR_WRAP(Error(ErrorEnum::eFailed, "can't open resource info file"));
+        LOG_WRN() << "Resource info file not found: " << mConfig.mResourceInfoFilePath.CStr();
+
+        return ErrorEnum::eNone;
     }
 
     auto parseResult = common::utils::ParseJson(file);
