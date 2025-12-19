@@ -126,6 +126,11 @@ void ParseDownloaderConfig(
     config.mDownloadPartLimit = object.GetValue<int>("downloadPartLimit", cDefaultDownloadPartLimit);
 }
 
+void ParseSMControllerConfig(const common::utils::CaseInsensitiveObjectWrapper& object, smcontroller::Config& config)
+{
+    config.mCMServerURL = object.GetValue<std::string>("cmServerUrl");
+}
+
 } // namespace
 
 /***********************************************************************************************************************
@@ -159,6 +164,8 @@ Error ParseConfig(const std::string& filename, Config& config)
             object.Has("imageManager") ? object.GetObject("imageManager") : empty, config.mImageManager);
         ParseDownloaderConfig(
             object.Has("downloader") ? object.GetObject("downloader") : empty, config.mWorkingDir, config.mDownloader);
+        ParseSMControllerConfig(
+            object.Has("smController") ? object.GetObject("smController") : empty, config.mSMController);
 
         if (auto err
             = common::config::ParseMigrationConfig(object.Has("migration") ? object.GetObject("migration") : empty,
@@ -204,6 +211,9 @@ Error ParseConfig(const std::string& filename, Config& config)
         Tie(config.mCloudResponseWaitTimeout, err) = common::utils::ParseDuration(
             object.GetValue<std::string>("cloudResponseWaitTimeout", cDefaultCloudResponseWaitTimeout));
         AOS_ERROR_CHECK_AND_THROW(err, "error parsing cloudResponseWaitTimeout tag");
+
+        config.mSMController.mCACert      = config.mCrypt.mCACert;
+        config.mSMController.mCertStorage = config.mCertStorage;
     } catch (const std::exception& e) {
         return common::utils::ToAosError(e);
     }

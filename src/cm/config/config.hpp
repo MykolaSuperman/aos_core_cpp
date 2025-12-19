@@ -17,6 +17,7 @@
 #include <core/common/monitoring/config.hpp>
 #include <core/common/tools/error.hpp>
 
+#include <cm/smcontroller/config.hpp>
 #include <common/config/config.hpp>
 #include <common/utils/time.hpp>
 
@@ -62,6 +63,7 @@ struct Config {
     imagemanager::Config      mImageManager;
     common::config::Migration mMigration;
     Downloader                mDownloader;
+    smcontroller::Config      mSMController;
     std::string               mDNSStoragePath;
     std::string               mDNSIP;
     std::string               mCertStorage;
