@@ -15,6 +15,7 @@
 #include <core/sm/imagemanager/itf/iteminfoprovider.hpp>
 #include <core/sm/networkmanager/itf/networkmanager.hpp>
 #include <core/sm/resourcemanager/itf/resourceinfoprovider.hpp>
+#include <sm/launcher/instanceidprovider.hpp>
 
 #include "itf/filesystem.hpp"
 #include "itf/monitoring.hpp"
@@ -43,12 +44,13 @@ public:
      * @param permHandler permission handler.
      * @param resourceInfoProvider resource info provider.
      * @param ociSpec OCI spec interface.
+     * @param instanceIDProvider instance ID provider.
      */
     Instance(const InstanceInfo& instance, const ContainerConfig& config, const NodeInfo& nodeInfo,
         FileSystemItf& fileSystem, RunnerItf& runner, MonitoringItf& monitoring,
         imagemanager::ItemInfoProviderItf& itemInfoProvider, networkmanager::NetworkManagerItf& networkManager,
         aos::iamclient::PermHandlerItf& permHandler, resourcemanager::ResourceInfoProviderItf& resourceInfoProvider,
-        oci::OCISpecItf& ociSpec);
+        oci::OCISpecItf& ociSpec, InstanceIDProviderItf& instanceIDProvider);
 
     /**
      * Constructor.
@@ -64,12 +66,13 @@ public:
      * @param permHandler permission handler.
      * @param resourceInfoProvider resource info provider.
      * @param ociSpec OCI spec interface.
+     * @param instanceIDProvider instance ID provider.
      */
     Instance(const std::string& instanceID, const ContainerConfig& config, const NodeInfo& nodeInfo,
         FileSystemItf& fileSystem, RunnerItf& runner, MonitoringItf& monitoring,
         imagemanager::ItemInfoProviderItf& itemInfoProvider, networkmanager::NetworkManagerItf& networkManager,
         aos::iamclient::PermHandlerItf& permHandler, resourcemanager::ResourceInfoProviderItf& resourceInfoProvider,
-        oci::OCISpecItf& ociSpec);
+        oci::OCISpecItf& ociSpec, InstanceIDProviderItf& instanceIDProvider);
 
     /**
      * Starts instance.
@@ -163,8 +166,7 @@ private:
     Error  PrepareStateStorage();
     Error  PrepareRootFS(
          const std::string& runtimeDir, const oci::ImageConfig& imageConfig, const oci::RuntimeConfig& runtimeConfig);
-    Error SetupNetwork(
-        const std::string& runtimeDir, const oci::ImageConfig& imageConfig, const oci::ItemConfig& itemConfig);
+    Error StartNetwork(const std::string& runtimeDir);
     Error AddNetworkHostsFromResource(const std::string& resource, std::vector<Host>& hosts);
     Error StartMonitoring();
 
@@ -182,6 +184,7 @@ private:
     aos::iamclient::PermHandlerItf&           mPermHandler;
     resourcemanager::ResourceInfoProviderItf& mResourceInfoProvider;
     oci::OCISpecItf&                          mOCISpec;
+    InstanceIDProviderItf&                    mInstanceIDProvider;
 
     mutable std::mutex mMutex;
 
