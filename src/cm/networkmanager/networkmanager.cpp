@@ -189,6 +189,13 @@ Error NetworkManager::AllocateInstanceNetwork(const InstanceIdent& instanceIdent
     std::transform(serviceData.mHosts.begin(), serviceData.mHosts.end(), std::back_inserter(hosts),
         [](const auto& host) { return host.CStr(); });
 
+    // TODO(debug): confirm multi-instance host collision; remove once diagnosed.
+    for (const auto& host : hosts) {
+        LOG_DBG() << "Requested host for instance" << Log::Field("host", host.c_str())
+                  << Log::Field("instanceIdent", instanceIdent)
+                  << Log::Field("alreadyExists", IsHostExist(host) ? "yes" : "no");
+    }
+
     try {
         std::vector<UnresolvedConnection> unresolvedConnections;
         auto                              it = mNetworkStates.find(networkID.CStr());
@@ -242,6 +249,10 @@ Error NetworkManager::AllocateInstanceNetwork(const InstanceIdent& instanceIdent
 
             for (const auto& host : hosts) {
                 if (IsHostExist(host)) {
+                    LOG_ERR() << "Host already exists, cannot allocate instance network (existing instance)"
+                              << Log::Field("host", host.c_str()) << Log::Field("instanceIdent", instanceIdent)
+                              << Log::Field("IP", itInstance->second.mIP);
+
                     err = Error(ErrorEnum::eAlreadyExist, "host already exists");
 
                     return err;
@@ -310,6 +321,10 @@ Error NetworkManager::AllocateInstanceNetwork(const InstanceIdent& instanceIdent
 
         for (const auto& host : hosts) {
             if (IsHostExist(host)) {
+                LOG_ERR() << "Host already exists, cannot allocate instance network (new instance)"
+                          << Log::Field("host", host.c_str()) << Log::Field("instanceIdent", instanceIdent)
+                          << Log::Field("IP", IP.c_str());
+
                 err = Error(ErrorEnum::eAlreadyExist, "host already exists");
                 return err;
             }
