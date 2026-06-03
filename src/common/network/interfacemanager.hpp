@@ -259,6 +259,16 @@ public:
     Error MoveLinkToNamespace(const String& ifname, const String& netNSPath) override;
 
     /**
+     * Renames a link (must be down). Runs inside netNSPath when non-empty.
+     *
+     * @param ifname current interface name.
+     * @param newName new interface name.
+     * @param netNSPath optional path to the netns; empty for current.
+     * @return Error.
+     */
+    Error RenameLink(const String& ifname, const String& newName, const String& netNSPath) override;
+
+    /**
      * Assigns an IP address in CIDR form to an interface, optionally inside a netns.
      *
      * @param ifname interface name.

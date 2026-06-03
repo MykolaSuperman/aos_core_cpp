@@ -30,10 +30,14 @@ Error BridgeNetwork::Attach(const String& instanceID, const BridgeParams& params
     LOG_DBG() << "Attach bridge" << Log::Field("instanceID", instanceID) << Log::Field("bridge", params.mBridgeIfName);
 
     const auto hostName = HostVethName(instanceID);
+    const auto peerName = PeerVethName(instanceID);
 
     Error err;
 
-    if (err = mNetIf->CreateVeth(hostName, params.mContainerIfName); !err.IsNone()) {
+    // Create the peer with a unique transient name (not the container name): the
+    // peer lives in the host netns until the move, and concurrent attaches would
+    // otherwise collide on a shared "eth0".
+    if (err = mNetIf->CreateVeth(hostName, peerName); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
@@ -53,14 +57,20 @@ Error BridgeNetwork::Attach(const String& instanceID, const BridgeParams& params
         return AOS_ERROR_WRAP(err);
     }
 
-    if (err = mNetIf->MoveLinkToNamespace(params.mContainerIfName, params.mNetNSPath); !err.IsNone()) {
+    if (err = mNetIf->MoveLinkToNamespace(peerName, params.mNetNSPath); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
-    // The kernel administratively downs a link when it is moved to a new netns,
-    // so bring the peer up inside the target namespace before adding the route
-    // (a route via the gateway needs the connected subnet route, which only
-    // exists while the interface is up).
+    // Once inside the instance netns, rename the peer to the container interface
+    // name. The kernel downs a link on a namespace move, so it is down here and
+    // the rename is allowed.
+    if (err = mNetIf->RenameLink(peerName, params.mContainerIfName, params.mNetNSPath); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    // Bring the peer up inside the target namespace before adding the route (a
+    // route via the gateway needs the connected subnet route, which only exists
+    // while the interface is up).
     if (err = mNetIf->SetupLink(params.mContainerIfName, params.mNetNSPath); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
@@ -104,7 +114,7 @@ Error BridgeNetwork::Detach(const String& instanceID, const String& bridgeIfName
  * Private
  **********************************************************************************************************************/
 
-StaticString<cInterfaceLen> BridgeNetwork::HostVethName(const String& instanceID)
+uint32_t BridgeNetwork::InstanceHash(const String& instanceID)
 {
     // FNV-1a 32-bit — deterministic so Detach can recompute without persisting the name.
     uint32_t hash = 2166136261u;
@@ -114,10 +124,28 @@ StaticString<cInterfaceLen> BridgeNetwork::HostVethName(const String& instanceID
         hash *= 16777619u;
     }
 
+    return hash;
+}
+
+StaticString<cInterfaceLen> BridgeNetwork::HostVethName(const String& instanceID)
+{
     // "veth" + 8 hex = 12 chars, within IFNAMSIZ-1 (15).
     StaticString<cInterfaceLen> name;
 
-    name.Format("veth%08x", hash);
+    name.Format("veth%08x", InstanceHash(instanceID));
+
+    return name;
+}
+
+StaticString<cInterfaceLen> BridgeNetwork::PeerVethName(const String& instanceID)
+{
+    // Unique transient name for the peer end in the host netns. The peer is
+    // renamed to the container interface name only after it is moved into the
+    // instance netns — otherwise concurrent attaches would all create a peer
+    // named "eth0" in the host netns and collide. "vpeer" + 8 hex = 13 chars.
+    StaticString<cInterfaceLen> name;
+
+    name.Format("vpeer%08x", InstanceHash(instanceID));
 
     return name;
 }

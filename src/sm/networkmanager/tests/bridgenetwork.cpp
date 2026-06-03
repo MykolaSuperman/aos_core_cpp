@@ -63,13 +63,15 @@ TEST_F(BridgeNetworkTest, AttachHappyPath)
 
     InSequence seq;
 
-    EXPECT_CALL(mNetIf, CreateVeth(_, String("eth0"))).WillOnce(Return(ErrorEnum::eNone));
+    EXPECT_CALL(mNetIf, CreateVeth(_, _)).WillOnce(Return(ErrorEnum::eNone)); // peer has a unique transient name
     EXPECT_CALL(mNetIf, SetMasterLink(_, String("br-test"))).WillOnce(Return(ErrorEnum::eNone));
     EXPECT_CALL(mNetIf, SetupLink(_, String(""))).WillOnce(Return(ErrorEnum::eNone)); // host, current ns
-    EXPECT_CALL(mNetIf, MoveLinkToNamespace(String("eth0"), String("/run/netns/test-instance")))
-        .WillOnce(Return(ErrorEnum::eNone));
+    EXPECT_CALL(mNetIf, MoveLinkToNamespace(_, String("/run/netns/test-instance")))
+        .WillOnce(Return(ErrorEnum::eNone)); // moves the unique peer
+    EXPECT_CALL(mNetIf, RenameLink(_, String("eth0"), String("/run/netns/test-instance")))
+        .WillOnce(Return(ErrorEnum::eNone)); // rename to the container interface name inside the netns
     EXPECT_CALL(mNetIf, SetupLink(String("eth0"), String("/run/netns/test-instance")))
-        .WillOnce(Return(ErrorEnum::eNone)); // peer, brought up inside the netns after the move
+        .WillOnce(Return(ErrorEnum::eNone)); // peer, brought up inside the netns after the rename
     EXPECT_CALL(mNetIf, AddAddress(String("eth0"), String("10.0.0.5/24"), String("/run/netns/test-instance")))
         .WillOnce(Return(ErrorEnum::eNone));
     EXPECT_CALL(mNetIf, AddRoute(String("0.0.0.0/0"), String("10.0.0.1"), String("/run/netns/test-instance")))
@@ -91,6 +93,7 @@ TEST_F(BridgeNetworkTest, AttachNoHairpin)
     EXPECT_CALL(mNetIf, SetMasterLink(_, _)).WillOnce(Return(ErrorEnum::eNone));
     EXPECT_CALL(mNetIf, SetupLink(_, _)).Times(2).WillRepeatedly(Return(ErrorEnum::eNone));
     EXPECT_CALL(mNetIf, MoveLinkToNamespace(_, _)).WillOnce(Return(ErrorEnum::eNone));
+    EXPECT_CALL(mNetIf, RenameLink(_, _, _)).WillOnce(Return(ErrorEnum::eNone));
     EXPECT_CALL(mNetIf, AddAddress(_, _, _)).WillOnce(Return(ErrorEnum::eNone));
     EXPECT_CALL(mNetIf, AddRoute(_, _, _)).WillOnce(Return(ErrorEnum::eNone));
     EXPECT_CALL(mNetIf, SetHairpin(_, _)).Times(0);

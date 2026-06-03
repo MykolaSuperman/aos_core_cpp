@@ -7,6 +7,8 @@
 #ifndef AOS_SM_NETWORKMANAGER_BRIDGENETWORK_HPP_
 #define AOS_SM_NETWORKMANAGER_BRIDGENETWORK_HPP_
 
+#include <cstdint>
+
 #include <core/sm/networkmanager/itf/bridgenetwork.hpp>
 #include <core/sm/networkmanager/itf/interfacemanager.hpp>
 
@@ -50,7 +52,9 @@ public:
     Error Detach(const String& instanceID, const String& bridgeIfName) override;
 
 private:
+    static uint32_t                    InstanceHash(const String& instanceID);
     static StaticString<cInterfaceLen> HostVethName(const String& instanceID);
+    static StaticString<cInterfaceLen> PeerVethName(const String& instanceID);
 
     InterfaceManagerItf* mNetIf {};
 };
