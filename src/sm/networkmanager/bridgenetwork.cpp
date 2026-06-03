@@ -18,10 +18,9 @@ namespace aos::sm::networkmanager {
  * Public
  **********************************************************************************************************************/
 
-Error BridgeNetwork::Init(InterfaceManagerItf& netIf, FirewallItf& firewall)
+Error BridgeNetwork::Init(InterfaceManagerItf& netIf)
 {
-    mNetIf    = &netIf;
-    mFirewall = &firewall;
+    mNetIf = &netIf;
 
     return ErrorEnum::eNone;
 }
@@ -54,14 +53,15 @@ Error BridgeNetwork::Attach(const String& instanceID, const BridgeParams& params
         return AOS_ERROR_WRAP(err);
     }
 
-    // Bring peer up before moving: IFF_UP survives the namespace move, so no
-    // SetupLink is needed inside the netns (InterfaceManagerItf::SetupLink has
-    // no netNSPath overload).
-    if (err = mNetIf->SetupLink(params.mContainerIfName); !err.IsNone()) {
+    if (err = mNetIf->MoveLinkToNamespace(params.mContainerIfName, params.mNetNSPath); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
-    if (err = mNetIf->MoveLinkToNamespace(params.mContainerIfName, params.mNetNSPath); !err.IsNone()) {
+    // The kernel administratively downs a link when it is moved to a new netns,
+    // so bring the peer up inside the target namespace before adding the route
+    // (a route via the gateway needs the connected subnet route, which only
+    // exists while the interface is up).
+    if (err = mNetIf->SetupLink(params.mContainerIfName, params.mNetNSPath); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
@@ -79,44 +79,25 @@ Error BridgeNetwork::Attach(const String& instanceID, const BridgeParams& params
         }
     }
 
-    if (params.mIPMasq) {
-        if (err = mFirewall->AddMasquerade(params.mSubnet, params.mBridgeIfName); !err.IsNone()) {
-            return AOS_ERROR_WRAP(err);
-        }
-    }
-
     result.mHostIfName      = hostName;
     result.mContainerIfName = params.mContainerIfName;
 
     return ErrorEnum::eNone;
 }
 
-Error BridgeNetwork::Detach(const String& instanceID, const String& bridgeIfName, const String& subnet)
+Error BridgeNetwork::Detach(const String& instanceID, const String& bridgeIfName)
 {
     LOG_DBG() << "Detach bridge" << Log::Field("instanceID", instanceID) << Log::Field("bridge", bridgeIfName);
-
-    Error err;
-
-    if (!subnet.IsEmpty()) {
-        if (auto errMasq = mFirewall->RemoveMasquerade(subnet, bridgeIfName); !errMasq.IsNone()) {
-            if (errMasq.Value() != ErrorEnum::eNotFound) {
-                err = AOS_ERROR_WRAP(errMasq);
-                LOG_ERR() << "Failed to remove masquerade rule" << Log::Field(errMasq);
-            }
-        }
-    }
 
     const auto hostName = HostVethName(instanceID);
 
     if (auto errDel = mNetIf->DeleteLink(hostName); !errDel.IsNone()) {
         LOG_ERR() << "Failed to delete host veth" << Log::Field(errDel);
 
-        if (err.IsNone()) {
-            err = AOS_ERROR_WRAP(errDel);
-        }
+        return AOS_ERROR_WRAP(errDel);
     }
 
-    return err;
+    return ErrorEnum::eNone;
 }
 
 /***********************************************************************************************************************

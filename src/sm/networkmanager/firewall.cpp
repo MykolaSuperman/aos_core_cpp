@@ -464,9 +464,14 @@ Error Firewall::AddMasquerade(const String& subnet, const String& outIf)
         return ErrorEnum::eNone;
     }
 
+    // Masquerade subnet traffic that leaves the host via any interface other
+    // than the bridge (the bridge is where container traffic enters the host;
+    // internet-bound traffic egresses the uplink). Matching the bridge here
+    // would never fire for egress and intra-bridge traffic must not be NATed.
     nftables::FWRule r {};
     r.mSrcAddr = key.first;
     r.mOIFName = key.second;
+    r.mOIFNeg  = true;
     r.mAction  = nftables::FWActionEnum::eMasquerade;
 
     auto txn = mBackend->NewTxn();

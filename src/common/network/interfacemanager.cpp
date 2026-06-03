@@ -182,28 +182,36 @@ Error InterfaceManager::DeleteLink(const String& ifname)
     return ErrorEnum::eNone;
 }
 
-Error InterfaceManager::SetupLink(const String& ifname)
+Error InterfaceManager::SetupLink(const String& ifname, const String& netNSPath)
 {
     LOG_DBG() << "Bring up interface: ifname=" << ifname;
 
-    auto [sock, err] = CreateNetlinkSocket();
-    if (!err.IsNone()) {
-        return err;
+    auto doSetupLink = [&]() -> Error {
+        auto [sock, err] = CreateNetlinkSocket();
+        if (!err.IsNone()) {
+            return err;
+        }
+
+        auto [link, linkErr] = AllocLink();
+        if (!linkErr.IsNone()) {
+            return linkErr;
+        }
+
+        rtnl_link_set_name(link.get(), ifname.CStr());
+        rtnl_link_set_flags(link.get(), IFF_UP);
+
+        if (auto errLinkChange = rtnl_link_change(sock.get(), link.get(), link.get(), 0); errLinkChange < 0) {
+            return NLToAosErr(errLinkChange, "failed to set link up");
+        }
+
+        return ErrorEnum::eNone;
+    };
+
+    if (netNSPath.IsEmpty()) {
+        return doSetupLink();
     }
 
-    auto [link, linkErr] = AllocLink();
-    if (!linkErr.IsNone()) {
-        return linkErr;
-    }
-
-    rtnl_link_set_name(link.get(), ifname.CStr());
-    rtnl_link_set_flags(link.get(), IFF_UP);
-
-    if (auto errLinkChange = rtnl_link_change(sock.get(), link.get(), link.get(), 0); errLinkChange < 0) {
-        return NLToAosErr(errLinkChange, "failed to set link up");
-    }
-
-    return ErrorEnum::eNone;
+    return WithNetNS(std::string(netNSPath.CStr()), doSetupLink);
 }
 
 Error InterfaceManager::AddLink(const LinkItf* link)

@@ -162,9 +162,10 @@ public:
      * Brings up interface.
      *
      * @param ifname interface name.
+     * @param netNSPath optional path to the netns; empty for current.
      * @return Error.
      */
-    Error SetupLink(const String& ifname) override;
+    Error SetupLink(const String& ifname, const String& netNSPath = "") override;
 
     /**
      * Sets master.
