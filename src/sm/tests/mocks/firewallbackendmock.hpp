@@ -25,6 +25,7 @@ public:
     MOCK_METHOD(void, DeleteRuleByHandle, (const std::string& table, const std::string& chain, FWRuleHandle handle),
         (override));
     MOCK_METHOD(Error, Commit, (), (override));
+    MOCK_METHOD(Error, Commit, (std::vector<FWRuleHandle> & addedHandles), (override));
 };
 
 class MockFWBackend : public FWBackendItf {
