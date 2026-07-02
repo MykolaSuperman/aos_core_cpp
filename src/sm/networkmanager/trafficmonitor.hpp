@@ -108,9 +108,11 @@ private:
     };
 
     struct InstanceChains {
-        std::string mIP;
-        std::string mInChain;
-        std::string mOutChain;
+        std::string            mIP;
+        std::string            mInChain;
+        std::string            mOutChain;
+        nftables::FWRuleHandle mInHandle {};
+        nftables::FWRuleHandle mOutHandle {};
     };
 
     using StagedTrafficData = std::vector<std::pair<std::string, TrafficData>>;
@@ -118,7 +120,9 @@ private:
     Error CreateSystemChains();
     Error DeleteTrafficTable();
     Error CreateInstanceChain(nftables::FWTxnItf& txn, const std::string& chain, bool isInChain,
-        const std::string& address, const std::string& parentBaseChain, uint64_t limit, StagedTrafficData& staged);
+        const std::string& address, uint64_t limit, StagedTrafficData& staged);
+    Error AddChainJump(nftables::FWTxnItf& txn, const std::string& chain, bool isInChain, const std::string& address,
+        const std::string& parentBaseChain);
     void  PublishTrafficData(StagedTrafficData& staged);
     Error AppendChainCounterRules(
         nftables::FWTxnItf& txn, const std::string& chain, bool isInChain, const std::string& address, bool disabled);
