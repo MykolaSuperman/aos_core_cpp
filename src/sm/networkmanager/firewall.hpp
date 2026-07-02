@@ -7,7 +7,9 @@
 #ifndef AOS_SM_NETWORKMANAGER_FIREWALL_HPP_
 #define AOS_SM_NETWORKMANAGER_FIREWALL_HPP_
 
+#include <mutex>
 #include <set>
+#include <unordered_map>
 #include <utility>
 
 #include <core/common/tools/noncopyable.hpp>
@@ -104,6 +106,9 @@ private:
     const std::string                             mTable {cTableName};
     nftables::FWBackendItf*                       mBackend {};
     std::set<std::pair<std::string, std::string>> mMasqueradeRules;
+
+    std::mutex                                                                                 mMutex;
+    std::unordered_map<std::string, std::pair<nftables::FWRuleHandle, nftables::FWRuleHandle>> mInstanceJumps;
 };
 
 } // namespace aos::sm::networkmanager
