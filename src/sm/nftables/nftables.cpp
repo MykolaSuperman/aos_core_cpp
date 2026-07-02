@@ -268,6 +268,20 @@ public:
         return mParent.RunBuffer(cmd);
     }
 
+    Error Commit(std::vector<FWRuleHandle>& addedHandles) override
+    {
+        const auto cmd = mBuf.str();
+
+        mBuf.str(std::string {});
+        mBuf.clear();
+
+        if (cmd.empty()) {
+            return ErrorEnum::eNone;
+        }
+
+        return mParent.RunBufferEcho(cmd, addedHandles);
+    }
+
 private:
     NFTables&          mParent;
     std::string        mFamily;
@@ -364,6 +378,49 @@ Error NFTables::RunBufferWithOutput(const std::string& cmd, std::string& output)
     }
 
     output = ctx.OutputBuffer();
+
+    return ErrorEnum::eNone;
+}
+
+Error NFTables::RunBufferEcho(const std::string& cmd, std::vector<FWRuleHandle>& handles)
+{
+    std::lock_guard<std::mutex> lock {mMutex};
+
+    NFTCtxGuard ctx;
+    if (ctx.Get() == nullptr) {
+        return AOS_ERROR_WRAP(Error(ErrorEnum::eFailed, "nft_ctx_new failed"));
+    }
+
+    // Echo the added objects so their kernel-assigned handles are printed
+    // (the guard already enables the HANDLE flag).
+    nft_ctx_output_set_flags(ctx.Get(), nft_ctx_output_get_flags(ctx.Get()) | NFT_CTX_OUTPUT_ECHO);
+
+    if (nft_run_cmd_from_buffer(ctx.Get(), cmd.c_str()) != 0) {
+        const auto errText = ctx.ErrorBuffer();
+
+        if (IsNotFoundError(errText)) {
+            return Error(ErrorEnum::eNotFound, errText.empty() ? "nftables object not found" : errText.c_str());
+        }
+
+        LOG_ERR() << "nftables command failed: " << cmd.c_str() << ", err=" << errText.c_str();
+
+        return AOS_ERROR_WRAP(Error(ErrorEnum::eFailed, errText.empty() ? "nftables command failed" : errText.c_str()));
+    }
+
+    // Extract the handle of every added rule, in order, from the echoed output
+    // (same "# handle N" form ListChainRules() parses).
+    const auto         output = ctx.OutputBuffer();
+    std::istringstream iss(output);
+    std::string        line;
+    const std::regex   re(R"(#\s+handle\s+(\d+))");
+
+    while (std::getline(iss, line)) {
+        std::smatch m;
+
+        if (std::regex_search(line, m, re)) {
+            handles.push_back(static_cast<FWRuleHandle>(std::stoull(m[1])));
+        }
+    }
 
     return ErrorEnum::eNone;
 }
