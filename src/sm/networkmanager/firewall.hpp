@@ -7,6 +7,7 @@
 #ifndef AOS_SM_NETWORKMANAGER_FIREWALL_HPP_
 #define AOS_SM_NETWORKMANAGER_FIREWALL_HPP_
 
+#include <memory>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -90,6 +91,21 @@ public:
      */
     Error RemoveMasquerade(const String& subnet, const String& outIf) override;
 
+    /**
+     * Begins batch mode: RemoveInstance accumulates its nft deletes into a
+     * single shared transaction instead of committing per instance.
+     *
+     * @return Error.
+     */
+    Error BeginBatch() override;
+
+    /**
+     * Commits the accumulated batch transaction and leaves batch mode.
+     *
+     * @return Error.
+     */
+    Error FlushBatch() override;
+
 private:
     static constexpr auto cTableName           = "aos";
     static constexpr auto cForwardChain        = "forward";
@@ -109,6 +125,9 @@ private:
 
     std::mutex                                                                                 mMutex;
     std::unordered_map<std::string, std::pair<nftables::FWRuleHandle, nftables::FWRuleHandle>> mInstanceJumps;
+
+    bool                                mBatchMode {false};
+    std::unique_ptr<nftables::FWTxnItf> mBatchTxn;
 };
 
 } // namespace aos::sm::networkmanager

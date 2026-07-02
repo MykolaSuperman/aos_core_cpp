@@ -8,6 +8,8 @@
 #define AOS_SM_NETWORKMANAGER_TRAFFICMONITOR_HPP_
 
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 #include <utility>
@@ -87,6 +89,21 @@ public:
      */
     Error GetInstanceTraffic(const String& instanceID, uint64_t& inputTraffic, uint64_t& outputTraffic) const override;
 
+    /**
+     * Begins batch mode: StopInstanceMonitoring accumulates its nft deletes into
+     * a single shared transaction instead of committing per instance.
+     *
+     * @return Error.
+     */
+    Error BeginBatch() override;
+
+    /**
+     * Commits the accumulated batch transaction and leaves batch mode.
+     *
+     * @return Error.
+     */
+    Error FlushBatch() override;
+
 private:
     static constexpr auto cTable          = "aos-traffic";
     static constexpr auto cInputChain     = "input";
@@ -140,10 +157,14 @@ private:
     std::unordered_map<std::string, TrafficData>    mTrafficData {};
     std::unordered_map<std::string, InstanceChains> mInstanceChains {};
     mutable std::shared_mutex                       mMutex {};
-    aos::Timer                                      mTimer {};
-    TrafficPeriod                                   mTrafficPeriod {};
-    Duration                                        mUpdatePeriod {};
-    bool                                            mStop {};
+
+    bool                                mBatchMode {false};
+    std::unique_ptr<nftables::FWTxnItf> mBatchTxn;
+    std::mutex                          mBatchTxnMutex;
+    aos::Timer                          mTimer {};
+    TrafficPeriod                       mTrafficPeriod {};
+    Duration                            mUpdatePeriod {};
+    bool                                mStop {};
 };
 
 } // namespace aos::sm::networkmanager
