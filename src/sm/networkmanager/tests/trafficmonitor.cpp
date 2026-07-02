@@ -190,6 +190,54 @@ TEST_F(TrafficMonitorTest, StopInstanceMonitoring)
     EXPECT_EQ(mMonitor->StopInstanceMonitoring("test-instance"), ErrorEnum::eNone);
 }
 
+TEST_F(TrafficMonitorTest, StopInstanceMonitoringUsesCapturedHandlesWithoutListing)
+{
+    ExpectInit();
+    ASSERT_EQ(mMonitor->Init(*mStorage, *mBackend), ErrorEnum::eNone);
+
+    const std::string expectedInChain  = "in_test_instance";
+    const std::string expectedOutChain = "out_test_instance";
+
+    // Start: the two parent jumps are added last, so their echoed handles are
+    // the final two returned by Commit and get recorded.
+    {
+        auto txn = MakeTxn();
+        EXPECT_CALL(*txn, Commit(_)).WillOnce([](std::vector<FWRuleHandle>& handles) {
+            handles = {10, 11};
+
+            return ErrorEnum::eNone;
+        });
+
+        EXPECT_CALL(*mBackend, NewTxn()).WillOnce(Return(ByMove(std::move(txn))));
+        EXPECT_CALL(*mStorage, GetTrafficMonitorData(String(expectedInChain.c_str()), _, _))
+            .WillOnce(Return(ErrorEnum::eNotFound));
+        EXPECT_CALL(*mStorage, GetTrafficMonitorData(String(expectedOutChain.c_str()), _, _))
+            .WillOnce(Return(ErrorEnum::eNotFound));
+
+        ASSERT_EQ(
+            mMonitor->StartInstanceMonitoring("test-instance", "192.168.1.100", 1000000, 500000), ErrorEnum::eNone);
+    }
+
+    // Stop: delete the captured handles directly, never listing the forward chain.
+    auto txn = MakeTxn();
+    EXPECT_CALL(*txn, DeleteRuleByHandle(std::string(cTable), std::string(cForwardChain), FWRuleHandle {10}));
+    EXPECT_CALL(*txn, DeleteRuleByHandle(std::string(cTable), std::string(cForwardChain), FWRuleHandle {11}));
+    EXPECT_CALL(*txn, FlushChain(std::string(cTable), expectedInChain));
+    EXPECT_CALL(*txn, FlushChain(std::string(cTable), expectedOutChain));
+    EXPECT_CALL(*txn, DeleteChain(std::string(cTable), expectedInChain));
+    EXPECT_CALL(*txn, DeleteChain(std::string(cTable), expectedOutChain));
+
+    EXPECT_CALL(*mBackend, ListChainRules(std::string(cTable), std::string(cForwardChain), _)).Times(0);
+    EXPECT_CALL(*mBackend, NewTxn()).WillOnce(Return(ByMove(std::move(txn))));
+
+    EXPECT_CALL(*mStorage, SetTrafficMonitorData(String(expectedInChain.c_str()), _, _))
+        .WillOnce(Return(ErrorEnum::eNone));
+    EXPECT_CALL(*mStorage, SetTrafficMonitorData(String(expectedOutChain.c_str()), _, _))
+        .WillOnce(Return(ErrorEnum::eNone));
+
+    EXPECT_EQ(mMonitor->StopInstanceMonitoring("test-instance"), ErrorEnum::eNone);
+}
+
 TEST_F(TrafficMonitorTest, GetSystemData)
 {
     ExpectInit();

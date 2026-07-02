@@ -156,18 +156,33 @@ Error TrafficMonitor::StartInstanceMonitoring(
 
     StagedTrafficData staged;
 
-    if (auto err = CreateInstanceChain(*txn, chains.mInChain, true, chains.mIP, cForwardChain, downloadLimit, staged);
-        !err.IsNone()) {
+    if (auto err = CreateInstanceChain(*txn, chains.mInChain, true, chains.mIP, downloadLimit, staged); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
-    if (auto err = CreateInstanceChain(*txn, chains.mOutChain, false, chains.mIP, cForwardChain, uploadLimit, staged);
-        !err.IsNone()) {
+    if (auto err = CreateInstanceChain(*txn, chains.mOutChain, false, chains.mIP, uploadLimit, staged); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
+    // Add both parent jumps last so their echoed handles are the final two,
+    // letting StopInstanceMonitoring delete them by handle without listing.
+    if (auto err = AddChainJump(*txn, chains.mInChain, true, chains.mIP, cForwardChain); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    if (auto err = AddChainJump(*txn, chains.mOutChain, false, chains.mIP, cForwardChain); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    std::vector<nftables::FWRuleHandle> handles;
+
+    if (auto err = txn->Commit(handles); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    if (handles.size() >= 2) {
+        chains.mInHandle  = handles[handles.size() - 2];
+        chains.mOutHandle = handles[handles.size() - 1];
     }
 
     PublishTrafficData(staged);
@@ -202,18 +217,28 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
         chains = it->second;
     }
 
-    std::vector<nftables::FWListedRule> forwardRules;
-
-    if (auto err = mBackend->ListChainRules(cTable, cForwardChain, forwardRules); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
     auto txn = mBackend->NewTxn();
 
-    for (const auto& r : forwardRules) {
-        if (r.mRule.mAction == nftables::FWActionEnum::eJump
-            && (r.mRule.mJumpTarget == chains.mInChain || r.mRule.mJumpTarget == chains.mOutChain)) {
-            txn->DeleteRuleByHandle(cTable, cForwardChain, r.mHandle);
+    if (chains.mInHandle != 0 && chains.mOutHandle != 0) {
+        // Fast path: delete the parent jumps by the handles captured at start,
+        // so a mass teardown does not re-list the whole forward chain per
+        // instance (O(1) instead of O(N)).
+        txn->DeleteRuleByHandle(cTable, cForwardChain, chains.mInHandle);
+        txn->DeleteRuleByHandle(cTable, cForwardChain, chains.mOutHandle);
+    } else {
+        // Fallback (handles not tracked, e.g. after an SM restart): scan the
+        // forward chain for this instance's jumps.
+        std::vector<nftables::FWListedRule> forwardRules;
+
+        if (auto err = mBackend->ListChainRules(cTable, cForwardChain, forwardRules); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
+
+        for (const auto& r : forwardRules) {
+            if (r.mRule.mAction == nftables::FWActionEnum::eJump
+                && (r.mRule.mJumpTarget == chains.mInChain || r.mRule.mJumpTarget == chains.mOutChain)) {
+                txn->DeleteRuleByHandle(cTable, cForwardChain, r.mHandle);
+            }
         }
     }
 
@@ -291,11 +316,19 @@ Error TrafficMonitor::CreateSystemChains()
 
     StagedTrafficData staged;
 
-    if (auto err = CreateInstanceChain(*txn, cInSystemChain, true, "", cInputChain, 0, staged); !err.IsNone()) {
+    if (auto err = CreateInstanceChain(*txn, cInSystemChain, true, "", 0, staged); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
-    if (auto err = CreateInstanceChain(*txn, cOutSystemChain, false, "", cOutputChain, 0, staged); !err.IsNone()) {
+    if (auto err = AddChainJump(*txn, cInSystemChain, true, "", cInputChain); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    if (auto err = CreateInstanceChain(*txn, cOutSystemChain, false, "", 0, staged); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    if (auto err = AddChainJump(*txn, cOutSystemChain, false, "", cOutputChain); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
@@ -322,26 +355,13 @@ Error TrafficMonitor::DeleteTrafficTable()
 }
 
 Error TrafficMonitor::CreateInstanceChain(nftables::FWTxnItf& txn, const std::string& chain, bool isInChain,
-    const std::string& address, const std::string& parentBaseChain, uint64_t limit, StagedTrafficData& staged)
+    const std::string& address, uint64_t limit, StagedTrafficData& staged)
 {
     LOG_DBG() << "Create traffic chain" << Log::Field("chain", chain.c_str());
 
     txn.AddChain({cTable, chain});
 
     if (auto err = AppendChainCounterRules(txn, chain, isInChain, address, false); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
-    nftables::FWRule jump {};
-
-    if (!address.empty()) {
-        (isInChain ? jump.mDstAddr : jump.mSrcAddr) = address;
-    }
-
-    jump.mAction     = nftables::FWActionEnum::eJump;
-    jump.mJumpTarget = chain;
-
-    if (auto err = txn.AddRule(cTable, parentBaseChain, jump); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
@@ -358,6 +378,21 @@ Error TrafficMonitor::CreateInstanceChain(nftables::FWTxnItf& txn, const std::st
     staged.emplace_back(chain, std::move(traffic));
 
     return ErrorEnum::eNone;
+}
+
+Error TrafficMonitor::AddChainJump(nftables::FWTxnItf& txn, const std::string& chain, bool isInChain,
+    const std::string& address, const std::string& parentBaseChain)
+{
+    nftables::FWRule jump {};
+
+    if (!address.empty()) {
+        (isInChain ? jump.mDstAddr : jump.mSrcAddr) = address;
+    }
+
+    jump.mAction     = nftables::FWActionEnum::eJump;
+    jump.mJumpTarget = chain;
+
+    return txn.AddRule(cTable, parentBaseChain, jump);
 }
 
 void TrafficMonitor::PublishTrafficData(StagedTrafficData& staged)
