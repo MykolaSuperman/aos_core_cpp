@@ -226,6 +226,12 @@ Error Firewall::Start()
         return AOS_ERROR_WRAP(err);
     }
 
+    {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        mInstanceJumps.clear();
+    }
+
     mMasqueradeRules.clear();
 
     return ErrorEnum::eNone;
@@ -240,6 +246,12 @@ Error Firewall::Stop()
     // Keep the table and base chains (they outlive SM); drop only the
     // per-instance state we added. Nothing to do if the table is already gone.
     if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
+        {
+            std::lock_guard<std::mutex> lock {mMutex};
+
+            mInstanceJumps.clear();
+        }
+
         mMasqueradeRules.clear();
 
         return ErrorEnum::eNone;
@@ -247,6 +259,12 @@ Error Firewall::Stop()
 
     if (auto err = ReconcileArtifacts(forwardRules); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        mInstanceJumps.clear();
     }
 
     mMasqueradeRules.clear();
@@ -377,8 +395,18 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
         return AOS_ERROR_WRAP(err);
     }
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
+    std::vector<nftables::FWRuleHandle> handles;
+
+    if (auto err = txn->Commit(handles); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    // The two forward-chain jumps are added last; record their handles so
+    // RemoveInstance can delete them directly instead of scanning the chain.
+    if (handles.size() >= 2) {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        mInstanceJumps[chain] = {handles[handles.size() - 2], handles[handles.size() - 1]};
     }
 
     return ErrorEnum::eNone;
@@ -390,6 +418,42 @@ Error Firewall::RemoveInstance(const String& instanceID)
 
     const auto chain = ChainName(instanceID);
 
+    // Fast path: delete the parent jumps by the handles captured at AddInstance,
+    // so a mass teardown does not re-list the whole forward chain per instance
+    // (O(1) instead of O(N)).
+    bool                   haveHandles = false;
+    nftables::FWRuleHandle jumpIn {};
+    nftables::FWRuleHandle jumpOut {};
+
+    {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        if (auto it = mInstanceJumps.find(chain); it != mInstanceJumps.end()) {
+            jumpIn      = it->second.first;
+            jumpOut     = it->second.second;
+            haveHandles = true;
+
+            mInstanceJumps.erase(it);
+        }
+    }
+
+    if (haveHandles) {
+        auto txn = mBackend->NewTxn();
+
+        txn->DeleteRuleByHandle(mTable, cForwardChain, jumpIn);
+        txn->DeleteRuleByHandle(mTable, cForwardChain, jumpOut);
+        txn->FlushChain(mTable, chain);
+        txn->DeleteChain(mTable, chain);
+
+        if (auto err = txn->Commit(); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
+
+        return ErrorEnum::eNone;
+    }
+
+    // Fallback (handles not tracked, e.g. after an SM restart before re-add):
+    // scan the forward chain for this instance's jumps.
     std::vector<nftables::FWListedRule> forwardRules;
 
     if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
@@ -474,8 +538,18 @@ Error Firewall::UpdateInstance(const String& instanceID, const InstanceFirewallP
         return AOS_ERROR_WRAP(err);
     }
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
+    std::vector<nftables::FWRuleHandle> handles;
+
+    if (auto err = txn->Commit(handles); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    // Update re-adds the parent jumps last; refresh the tracked handles so a
+    // later RemoveInstance deletes the current jumps, not stale ones.
+    if (handles.size() >= 2) {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        mInstanceJumps[chain] = {handles[handles.size() - 2], handles[handles.size() - 1]};
     }
 
     return ErrorEnum::eNone;

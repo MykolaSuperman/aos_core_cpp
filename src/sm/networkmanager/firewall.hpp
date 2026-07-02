@@ -7,7 +7,9 @@
 #ifndef AOS_SM_NETWORKMANAGER_FIREWALL_HPP_
 #define AOS_SM_NETWORKMANAGER_FIREWALL_HPP_
 
+#include <mutex>
 #include <set>
+#include <unordered_map>
 #include <utility>
 
 #include <core/common/tools/noncopyable.hpp>
@@ -104,6 +106,13 @@ private:
     const std::string                             mTable {cTableName};
     nftables::FWBackendItf*                       mBackend {};
     std::set<std::pair<std::string, std::string>> mMasqueradeRules;
+
+    // Per-instance forward-chain jump handles (chain -> {inbound, outbound}),
+    // captured at AddInstance/UpdateInstance so RemoveInstance can delete them
+    // by handle without re-listing the whole forward chain. Guarded by mMutex
+    // as instances are added/removed concurrently from the launcher's workers.
+    std::mutex                                                                                 mMutex;
+    std::unordered_map<std::string, std::pair<nftables::FWRuleHandle, nftables::FWRuleHandle>> mInstanceJumps;
 };
 
 } // namespace aos::sm::networkmanager
