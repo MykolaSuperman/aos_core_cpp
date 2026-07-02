@@ -122,31 +122,18 @@ Error Bandwidth::Clear(const String& ifName)
 {
     LOG_DBG() << "Clear bandwidth" << Log::Field("ifName", ifName);
 
-    Error err;
+    // The root TBF and ingress qdiscs live on the host veth and are destroyed
+    // together with it when the interface is removed (the teardown path drops
+    // the instance veth / its namespace). Only the IFB device - a separate
+    // host-namespace netdev that does not die with the veth - needs explicit
+    // removal here. eNotFound means there was no IFB (ingress-only shaping).
+    if (auto err = mIfMgr->DeleteLink(IFBName(ifName)); !err.IsNone() && !err.Is(ErrorEnum::eNotFound)) {
+        LOG_ERR() << "Failed to delete IFB" << Log::Field(err);
 
-    if (auto rootErr = mTC->DelRootTBFQDisc(ifName); !rootErr.IsNone()) {
-        LOG_ERR() << "Failed to delete root TBF qdisc" << Log::Field(rootErr);
-
-        err = AOS_ERROR_WRAP(rootErr);
+        return AOS_ERROR_WRAP(err);
     }
 
-    if (auto ingErr = mTC->DelIngressQDisc(ifName); !ingErr.IsNone()) {
-        LOG_ERR() << "Failed to delete ingress qdisc" << Log::Field(ingErr);
-
-        if (err.IsNone()) {
-            err = AOS_ERROR_WRAP(ingErr);
-        }
-    }
-
-    if (auto ifbErr = mIfMgr->DeleteLink(IFBName(ifName)); !ifbErr.IsNone() && !ifbErr.Is(ErrorEnum::eNotFound)) {
-        LOG_ERR() << "Failed to delete IFB" << Log::Field(ifbErr);
-
-        if (err.IsNone()) {
-            err = AOS_ERROR_WRAP(ifbErr);
-        }
-    }
-
-    return err;
+    return ErrorEnum::eNone;
 }
 
 /***********************************************************************************************************************
