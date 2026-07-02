@@ -445,58 +445,56 @@ Error Firewall::RemoveInstance(const String& instanceID)
 
     const auto chain = ChainName(instanceID);
 
-    // Fast path: delete the parent jumps by the handles captured at AddInstance,
-    // so a mass teardown does not re-list the whole forward chain per instance
-    // (O(1) instead of O(N)).
-    bool                   haveHandles = false;
-    nftables::FWRuleHandle jumpIn {};
-    nftables::FWRuleHandle jumpOut {};
+    // Collect the parent-jump handles to delete: fast path uses the handles
+    // captured at AddInstance so a mass teardown never re-lists the whole
+    // forward chain per instance (O(1) instead of O(N)).
+    std::vector<nftables::FWRuleHandle> jumpHandles;
 
     {
         std::lock_guard<std::mutex> lock {mMutex};
 
         if (auto it = mInstanceJumps.find(chain); it != mInstanceJumps.end()) {
-            jumpIn      = it->second.first;
-            jumpOut     = it->second.second;
-            haveHandles = true;
+            jumpHandles = {it->second.first, it->second.second};
 
             mInstanceJumps.erase(it);
         }
     }
 
-    if (haveHandles) {
-        auto txn = mBackend->NewTxn();
+    if (jumpHandles.empty()) {
+        // Fallback (handles not tracked, e.g. after an SM restart before re-add):
+        // scan the forward chain for this instance's jumps.
+        std::vector<nftables::FWListedRule> forwardRules;
 
-        txn->DeleteRuleByHandle(mTable, cForwardChain, jumpIn);
-        txn->DeleteRuleByHandle(mTable, cForwardChain, jumpOut);
-        txn->FlushChain(mTable, chain);
-        txn->DeleteChain(mTable, chain);
-
-        if (auto err = txn->Commit(); !err.IsNone()) {
+        if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
             return AOS_ERROR_WRAP(err);
         }
 
-        return ErrorEnum::eNone;
-    }
+        for (const auto& r : forwardRules) {
+            if (r.mRule.mAction == nftables::FWActionEnum::eJump && r.mRule.mJumpTarget == chain) {
+                jumpHandles.push_back(r.mHandle);
+            }
+        }
 
-    // Fallback (handles not tracked, e.g. after an SM restart before re-add):
-    // scan the forward chain for this instance's jumps.
-    std::vector<nftables::FWListedRule> forwardRules;
-
-    if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
-    std::vector<nftables::FWRuleHandle> jumpHandles;
-
-    for (const auto& r : forwardRules) {
-        if (r.mRule.mAction == nftables::FWActionEnum::eJump && r.mRule.mJumpTarget == chain) {
-            jumpHandles.push_back(r.mHandle);
+        if (jumpHandles.empty()) {
+            return ErrorEnum::eNone;
         }
     }
 
-    if (jumpHandles.empty()) {
-        return ErrorEnum::eNone;
+    // In batch mode, append the deletes to the shared transaction (serialized by
+    // mMutex) and let FlushBatch commit them all at once.
+    {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        if (mBatchMode && mBatchTxn) {
+            for (const auto handle : jumpHandles) {
+                mBatchTxn->DeleteRuleByHandle(mTable, cForwardChain, handle);
+            }
+
+            mBatchTxn->FlushChain(mTable, chain);
+            mBatchTxn->DeleteChain(mTable, chain);
+
+            return ErrorEnum::eNone;
+        }
     }
 
     auto txn = mBackend->NewTxn();
@@ -507,6 +505,38 @@ Error Firewall::RemoveInstance(const String& instanceID)
 
     txn->FlushChain(mTable, chain);
     txn->DeleteChain(mTable, chain);
+
+    if (auto err = txn->Commit(); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    return ErrorEnum::eNone;
+}
+
+Error Firewall::BeginBatch()
+{
+    std::lock_guard<std::mutex> lock {mMutex};
+
+    mBatchTxn  = mBackend->NewTxn();
+    mBatchMode = true;
+
+    return ErrorEnum::eNone;
+}
+
+Error Firewall::FlushBatch()
+{
+    std::unique_ptr<nftables::FWTxnItf> txn;
+
+    {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        mBatchMode = false;
+        txn        = std::move(mBatchTxn);
+    }
+
+    if (!txn) {
+        return ErrorEnum::eNone;
+    }
 
     if (auto err = txn->Commit(); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);

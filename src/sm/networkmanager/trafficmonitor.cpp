@@ -217,17 +217,13 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
         chains = it->second;
     }
 
-    auto txn = mBackend->NewTxn();
+    // Collect the forward-chain jump handles to delete: fast path uses the
+    // handles captured at start, fallback scans the chain.
+    std::vector<nftables::FWRuleHandle> jumpHandles;
 
     if (chains.mInHandle != 0 && chains.mOutHandle != 0) {
-        // Fast path: delete the parent jumps by the handles captured at start,
-        // so a mass teardown does not re-list the whole forward chain per
-        // instance (O(1) instead of O(N)).
-        txn->DeleteRuleByHandle(cTable, cForwardChain, chains.mInHandle);
-        txn->DeleteRuleByHandle(cTable, cForwardChain, chains.mOutHandle);
+        jumpHandles = {chains.mInHandle, chains.mOutHandle};
     } else {
-        // Fallback (handles not tracked, e.g. after an SM restart): scan the
-        // forward chain for this instance's jumps.
         std::vector<nftables::FWListedRule> forwardRules;
 
         if (auto err = mBackend->ListChainRules(cTable, cForwardChain, forwardRules); !err.IsNone()) {
@@ -237,18 +233,47 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
         for (const auto& r : forwardRules) {
             if (r.mRule.mAction == nftables::FWActionEnum::eJump
                 && (r.mRule.mJumpTarget == chains.mInChain || r.mRule.mJumpTarget == chains.mOutChain)) {
-                txn->DeleteRuleByHandle(cTable, cForwardChain, r.mHandle);
+                jumpHandles.push_back(r.mHandle);
             }
         }
     }
 
-    txn->FlushChain(cTable, chains.mInChain);
-    txn->DeleteChain(cTable, chains.mInChain);
-    txn->FlushChain(cTable, chains.mOutChain);
-    txn->DeleteChain(cTable, chains.mOutChain);
+    // Emit the deletes into the shared batch transaction (mass teardown) or a
+    // private transaction committed now.
+    bool emitted = false;
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
+    {
+        std::lock_guard<std::mutex> lock {mBatchTxnMutex};
+
+        if (mBatchMode && mBatchTxn) {
+            for (const auto handle : jumpHandles) {
+                mBatchTxn->DeleteRuleByHandle(cTable, cForwardChain, handle);
+            }
+
+            mBatchTxn->FlushChain(cTable, chains.mInChain);
+            mBatchTxn->DeleteChain(cTable, chains.mInChain);
+            mBatchTxn->FlushChain(cTable, chains.mOutChain);
+            mBatchTxn->DeleteChain(cTable, chains.mOutChain);
+
+            emitted = true;
+        }
+    }
+
+    if (!emitted) {
+        auto txn = mBackend->NewTxn();
+
+        for (const auto handle : jumpHandles) {
+            txn->DeleteRuleByHandle(cTable, cForwardChain, handle);
+        }
+
+        txn->FlushChain(cTable, chains.mInChain);
+        txn->DeleteChain(cTable, chains.mInChain);
+        txn->FlushChain(cTable, chains.mOutChain);
+        txn->DeleteChain(cTable, chains.mOutChain);
+
+        if (auto err = txn->Commit(); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
     }
 
     {
@@ -268,6 +293,38 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
         }
 
         mInstanceChains.erase(instanceID.CStr());
+    }
+
+    return ErrorEnum::eNone;
+}
+
+Error TrafficMonitor::BeginBatch()
+{
+    std::lock_guard<std::mutex> lock {mBatchTxnMutex};
+
+    mBatchTxn  = mBackend->NewTxn();
+    mBatchMode = true;
+
+    return ErrorEnum::eNone;
+}
+
+Error TrafficMonitor::FlushBatch()
+{
+    std::unique_ptr<nftables::FWTxnItf> txn;
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchTxnMutex};
+
+        mBatchMode = false;
+        txn        = std::move(mBatchTxn);
+    }
+
+    if (!txn) {
+        return ErrorEnum::eNone;
+    }
+
+    if (auto err = txn->Commit(); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
     }
 
     return ErrorEnum::eNone;
