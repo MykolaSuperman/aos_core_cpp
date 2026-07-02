@@ -11,12 +11,35 @@
 #include <string>
 
 #include <core/common/tools/logger.hpp>
+#include <core/common/tools/time.hpp>
 
 #include "firewall.hpp"
 
 namespace aos::sm::networkmanager {
 
 namespace {
+
+// RAII timer (temporary instrumentation): logs elapsed microseconds for the
+// enclosing scope on destruction under the "[profile]" marker.
+class ScopedTimer {
+public:
+    explicit ScopedTimer(const char* name)
+        : mName(name)
+        , mStart(Time::Now(CLOCK_MONOTONIC))
+    {
+    }
+
+    ~ScopedTimer()
+    {
+        const auto elapsed = Time::Now(CLOCK_MONOTONIC).Sub(mStart);
+
+        LOG_DBG() << "[profile] " << mName << Log::Field("us", static_cast<int>(elapsed.Microseconds()));
+    }
+
+private:
+    const char* mName;
+    Time        mStart;
+};
 
 RetWithError<uint16_t> ParsePort(const String& port)
 {
@@ -361,6 +384,8 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
 {
     LOG_DBG() << "Add firewall instance" << Log::Field("instanceID", instanceID);
 
+    ScopedTimer profileTimer {"Firewall::AddInstance"};
+
     // Without an instance IP the parent jumps lose their address match and
     // become global FORWARD jumps, and the terminal rules match everything.
     if (params.mIP.IsEmpty()) {
@@ -415,6 +440,8 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
 Error Firewall::RemoveInstance(const String& instanceID)
 {
     LOG_DBG() << "Remove firewall instance" << Log::Field("instanceID", instanceID);
+
+    ScopedTimer profileTimer {"Firewall::RemoveInstance"};
 
     const auto chain = ChainName(instanceID);
 
