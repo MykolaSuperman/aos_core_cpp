@@ -765,6 +765,36 @@ Error Database::SetTrafficMonitorData(const String& chain, const Time& time, uin
     return ErrorEnum::eNone;
 }
 
+Error Database::BeginTransaction()
+{
+    std::lock_guard lock {mMutex};
+
+    try {
+        if (!mSession->isTransaction()) {
+            mSession->begin();
+        }
+    } catch (const std::exception& e) {
+        return AOS_ERROR_WRAP(common::utils::ToAosError(e));
+    }
+
+    return ErrorEnum::eNone;
+}
+
+Error Database::CommitTransaction()
+{
+    std::lock_guard lock {mMutex};
+
+    try {
+        if (mSession->isTransaction()) {
+            mSession->commit();
+        }
+    } catch (const std::exception& e) {
+        return AOS_ERROR_WRAP(common::utils::ToAosError(e));
+    }
+
+    return ErrorEnum::eNone;
+}
+
 Error Database::GetTrafficMonitorData(const String& chain, Time& time, uint64_t& value) const
 {
     std::lock_guard lock {mMutex};
