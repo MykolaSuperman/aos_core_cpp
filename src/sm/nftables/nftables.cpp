@@ -282,6 +282,20 @@ public:
         return mParent.RunBufferEcho(cmd, addedHandles);
     }
 
+    Error Commit(std::vector<FWListedRule>& addedRules) override
+    {
+        const auto cmd = mBuf.str();
+
+        mBuf.str(std::string {});
+        mBuf.clear();
+
+        if (cmd.empty()) {
+            return ErrorEnum::eNone;
+        }
+
+        return mParent.RunBufferEchoRules(cmd, addedRules);
+    }
+
 private:
     NFTables&          mParent;
     std::string        mFamily;
@@ -419,6 +433,46 @@ Error NFTables::RunBufferEcho(const std::string& cmd, std::vector<FWRuleHandle>&
 
         if (std::regex_search(line, m, re)) {
             handles.push_back(static_cast<FWRuleHandle>(std::stoull(m[1])));
+        }
+    }
+
+    return ErrorEnum::eNone;
+}
+
+Error NFTables::RunBufferEchoRules(const std::string& cmd, std::vector<FWListedRule>& rules)
+{
+    std::lock_guard<std::mutex> lock {mMutex};
+
+    NFTCtxGuard ctx;
+    if (ctx.Get() == nullptr) {
+        return AOS_ERROR_WRAP(Error(ErrorEnum::eFailed, "nft_ctx_new failed"));
+    }
+
+    nft_ctx_output_set_flags(ctx.Get(), nft_ctx_output_get_flags(ctx.Get()) | NFT_CTX_OUTPUT_ECHO);
+
+    if (nft_run_cmd_from_buffer(ctx.Get(), cmd.c_str()) != 0) {
+        const auto errText = ctx.ErrorBuffer();
+
+        if (IsNotFoundError(errText)) {
+            return Error(ErrorEnum::eNotFound, errText.empty() ? "nftables object not found" : errText.c_str());
+        }
+
+        LOG_ERR() << "nftables command failed: " << cmd.c_str() << ", err=" << errText.c_str();
+
+        return AOS_ERROR_WRAP(Error(ErrorEnum::eFailed, errText.empty() ? "nftables command failed" : errText.c_str()));
+    }
+
+    // Parse the echoed added rules the same way ListChainRules() does, so added
+    // jumps can be matched to their target chains by the caller.
+    const auto         output = ctx.OutputBuffer();
+    std::istringstream iss(output);
+    std::string        line;
+
+    while (std::getline(iss, line)) {
+        FWListedRule listed {};
+
+        if (ParseRuleLine(line, listed)) {
+            rules.push_back(std::move(listed));
         }
     }
 

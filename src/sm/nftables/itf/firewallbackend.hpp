@@ -238,6 +238,16 @@ public:
      * @return error.
      */
     virtual Error Commit(std::vector<FWRuleHandle>& addedHandles) = 0;
+
+    /**
+     * Submits the queued batch and returns the rules it added, parsed with their
+     * handles (like ListChainRules). Lets the caller attribute added jumps to
+     * their target chains when many instances are committed together.
+     *
+     * @param[out] addedRules rules added by this batch.
+     * @return error.
+     */
+    virtual Error Commit(std::vector<FWListedRule>& addedRules) = 0;
 };
 
 /**

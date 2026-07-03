@@ -26,6 +26,7 @@ public:
         (override));
     MOCK_METHOD(Error, Commit, (), (override));
     MOCK_METHOD(Error, Commit, (std::vector<FWRuleHandle> & addedHandles), (override));
+    MOCK_METHOD(Error, Commit, (std::vector<FWListedRule> & addedRules), (override));
 };
 
 class MockFWBackend : public FWBackendItf {

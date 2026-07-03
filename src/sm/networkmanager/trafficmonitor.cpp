@@ -152,37 +152,42 @@ Error TrafficMonitor::StartInstanceMonitoring(
         std::string {cOutChainPrefix} + safeID,
     };
 
-    auto txn = mBackend->NewTxn();
-
     StagedTrafficData staged;
 
-    if (auto err = CreateInstanceChain(*txn, chains.mInChain, true, chains.mIP, downloadLimit, staged); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
+    // Build the chains + parent jumps into the shared batch transaction (mass
+    // start) or a private one committed now.
+    bool batched = false;
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchTxnMutex};
+
+        if (mBatchMode && mBatchTxn) {
+            if (auto err = BuildInstanceMonitoring(*mBatchTxn, chains, staged, downloadLimit, uploadLimit);
+                !err.IsNone()) {
+                return AOS_ERROR_WRAP(err);
+            }
+
+            batched = true;
+        }
     }
 
-    if (auto err = CreateInstanceChain(*txn, chains.mOutChain, false, chains.mIP, uploadLimit, staged); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
+    if (!batched) {
+        auto txn = mBackend->NewTxn();
 
-    // Add both parent jumps last so their echoed handles are the final two,
-    // letting StopInstanceMonitoring delete them by handle without listing.
-    if (auto err = AddChainJump(*txn, chains.mInChain, true, chains.mIP, cForwardChain); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
+        if (auto err = BuildInstanceMonitoring(*txn, chains, staged, downloadLimit, uploadLimit); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
 
-    if (auto err = AddChainJump(*txn, chains.mOutChain, false, chains.mIP, cForwardChain); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
+        std::vector<nftables::FWRuleHandle> handles;
 
-    std::vector<nftables::FWRuleHandle> handles;
+        if (auto err = txn->Commit(handles); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
 
-    if (auto err = txn->Commit(handles); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
-    if (handles.size() >= 2) {
-        chains.mInHandle  = handles[handles.size() - 2];
-        chains.mOutHandle = handles[handles.size() - 1];
+        if (handles.size() >= 2) {
+            chains.mInHandle  = handles[handles.size() - 2];
+            chains.mOutHandle = handles[handles.size() - 1];
+        }
     }
 
     PublishTrafficData(staged);
@@ -323,8 +328,37 @@ Error TrafficMonitor::FlushBatch()
         return ErrorEnum::eNone;
     }
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
+    std::vector<nftables::FWListedRule> added;
+
+    if (auto err = txn->Commit(added); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    // Map each added forward-chain jump to its target counter chain (one jump
+    // per chain), so instances started in this batch get their handles. Empty
+    // for a delete-only (mass-stop) batch.
+    std::unordered_map<std::string, nftables::FWRuleHandle> chainHandle;
+
+    for (const auto& r : added) {
+        if (r.mRule.mAction == nftables::FWActionEnum::eJump) {
+            chainHandle[r.mRule.mJumpTarget] = r.mHandle;
+        }
+    }
+
+    if (!chainHandle.empty()) {
+        std::unique_lock lock {mMutex};
+
+        for (auto& entry : mInstanceChains) {
+            auto& chains = entry.second;
+
+            if (auto it = chainHandle.find(chains.mInChain); it != chainHandle.end()) {
+                chains.mInHandle = it->second;
+            }
+
+            if (auto it = chainHandle.find(chains.mOutChain); it != chainHandle.end()) {
+                chains.mOutHandle = it->second;
+            }
+        }
     }
 
     return ErrorEnum::eNone;
@@ -450,6 +484,30 @@ Error TrafficMonitor::AddChainJump(nftables::FWTxnItf& txn, const std::string& c
     jump.mJumpTarget = chain;
 
     return txn.AddRule(cTable, parentBaseChain, jump);
+}
+
+Error TrafficMonitor::BuildInstanceMonitoring(nftables::FWTxnItf& txn, const InstanceChains& chains,
+    StagedTrafficData& staged, uint64_t downloadLimit, uint64_t uploadLimit)
+{
+    if (auto err = CreateInstanceChain(txn, chains.mInChain, true, chains.mIP, downloadLimit, staged); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    if (auto err = CreateInstanceChain(txn, chains.mOutChain, false, chains.mIP, uploadLimit, staged); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    // Add both parent jumps last so their echoed handles are the final two,
+    // letting StopInstanceMonitoring delete them by handle without listing.
+    if (auto err = AddChainJump(txn, chains.mInChain, true, chains.mIP, cForwardChain); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    if (auto err = AddChainJump(txn, chains.mOutChain, false, chains.mIP, cForwardChain); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    return ErrorEnum::eNone;
 }
 
 void TrafficMonitor::PublishTrafficData(StagedTrafficData& staged)

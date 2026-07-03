@@ -394,29 +394,19 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
 
     const auto chain = ChainName(instanceID);
 
+    // Batch mode: append into the shared transaction; FlushBatch commits and
+    // attributes the jump handles back to each instance chain.
+    {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        if (mBatchMode && mBatchTxn) {
+            return AppendInstanceChain(*mBatchTxn, chain, params);
+        }
+    }
+
     auto txn = mBackend->NewTxn();
 
-    txn->AddChain({mTable, chain});
-
-    if (auto err = AppendInstanceRules(*txn, mTable, chain, params); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
-    nftables::FWRule jumpIn {};
-    jumpIn.mDstAddr    = params.mIP.CStr();
-    jumpIn.mAction     = nftables::FWActionEnum::eJump;
-    jumpIn.mJumpTarget = chain;
-
-    if (auto err = txn->AddRule(mTable, cForwardChain, jumpIn); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
-    nftables::FWRule jumpOut {};
-    jumpOut.mSrcAddr    = params.mIP.CStr();
-    jumpOut.mAction     = nftables::FWActionEnum::eJump;
-    jumpOut.mJumpTarget = chain;
-
-    if (auto err = txn->AddRule(mTable, cForwardChain, jumpOut); !err.IsNone()) {
+    if (auto err = AppendInstanceChain(*txn, chain, params); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
     }
 
@@ -432,6 +422,36 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
         std::lock_guard<std::mutex> lock {mMutex};
 
         mInstanceJumps[chain] = {handles[handles.size() - 2], handles[handles.size() - 1]};
+    }
+
+    return ErrorEnum::eNone;
+}
+
+Error Firewall::AppendInstanceChain(
+    nftables::FWTxnItf& txn, const std::string& chain, const InstanceFirewallParams& params)
+{
+    txn.AddChain({mTable, chain});
+
+    if (auto err = AppendInstanceRules(txn, mTable, chain, params); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    nftables::FWRule jumpIn {};
+    jumpIn.mDstAddr    = params.mIP.CStr();
+    jumpIn.mAction     = nftables::FWActionEnum::eJump;
+    jumpIn.mJumpTarget = chain;
+
+    if (auto err = txn.AddRule(mTable, cForwardChain, jumpIn); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    nftables::FWRule jumpOut {};
+    jumpOut.mSrcAddr    = params.mIP.CStr();
+    jumpOut.mAction     = nftables::FWActionEnum::eJump;
+    jumpOut.mJumpTarget = chain;
+
+    if (auto err = txn.AddRule(mTable, cForwardChain, jumpOut); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
     }
 
     return ErrorEnum::eNone;
@@ -538,8 +558,31 @@ Error Firewall::FlushBatch()
         return ErrorEnum::eNone;
     }
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
+    std::vector<nftables::FWListedRule> added;
+
+    if (auto err = txn->Commit(added); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    // Attribute each added forward-chain jump to its target instance chain so
+    // RemoveInstance can delete it by handle later. Empty for a delete-only
+    // (mass-stop) batch.
+    std::unordered_map<std::string, std::vector<nftables::FWRuleHandle>> byChain;
+
+    for (const auto& r : added) {
+        if (r.mRule.mAction == nftables::FWActionEnum::eJump) {
+            byChain[r.mRule.mJumpTarget].push_back(r.mHandle);
+        }
+    }
+
+    if (!byChain.empty()) {
+        std::lock_guard<std::mutex> lock {mMutex};
+
+        for (const auto& [chain, hs] : byChain) {
+            if (hs.size() >= 2) {
+                mInstanceJumps[chain] = {hs[hs.size() - 2], hs[hs.size() - 1]};
+            }
+        }
     }
 
     return ErrorEnum::eNone;
