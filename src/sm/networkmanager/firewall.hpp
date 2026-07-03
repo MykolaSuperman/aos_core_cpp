@@ -118,6 +118,7 @@ private:
 
     Error CreateSkeleton();
     Error ReconcileArtifacts(const std::vector<nftables::FWListedRule>& forwardRules);
+    Error AppendInstanceChain(nftables::FWTxnItf& txn, const std::string& chain, const InstanceFirewallParams& params);
 
     const std::string                             mTable {cTableName};
     nftables::FWBackendItf*                       mBackend {};

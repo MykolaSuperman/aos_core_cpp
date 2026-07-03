@@ -140,6 +140,8 @@ private:
         const std::string& address, uint64_t limit, StagedTrafficData& staged);
     Error AddChainJump(nftables::FWTxnItf& txn, const std::string& chain, bool isInChain, const std::string& address,
         const std::string& parentBaseChain);
+    Error BuildInstanceMonitoring(nftables::FWTxnItf& txn, const InstanceChains& chains, StagedTrafficData& staged,
+        uint64_t downloadLimit, uint64_t uploadLimit);
     void  PublishTrafficData(StagedTrafficData& staged);
     Error AppendChainCounterRules(
         nftables::FWTxnItf& txn, const std::string& chain, bool isInChain, const std::string& address, bool disabled);
