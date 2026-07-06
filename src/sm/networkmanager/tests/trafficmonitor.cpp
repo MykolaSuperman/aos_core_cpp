@@ -198,11 +198,9 @@ TEST_F(TrafficMonitorTest, StopInstanceMonitoringUsesCapturedHandlesWithoutListi
     const std::string expectedInChain  = "in_test_instance";
     const std::string expectedOutChain = "out_test_instance";
 
-    // Start: the two parent jumps are added last, so their echoed handles are
-    // the final two returned by Commit and get recorded.
     {
         auto txn = MakeTxn();
-        EXPECT_CALL(*txn, Commit(_)).WillOnce([](std::vector<FWRuleHandle>& handles) {
+        EXPECT_CALL(*txn, Commit(An<std::vector<FWRuleHandle>&>())).WillOnce([](std::vector<FWRuleHandle>& handles) {
             handles = {10, 11};
 
             return ErrorEnum::eNone;
@@ -218,7 +216,6 @@ TEST_F(TrafficMonitorTest, StopInstanceMonitoringUsesCapturedHandlesWithoutListi
             mMonitor->StartInstanceMonitoring("test-instance", "192.168.1.100", 1000000, 500000), ErrorEnum::eNone);
     }
 
-    // Stop: delete the captured handles directly, never listing the forward chain.
     auto txn = MakeTxn();
     EXPECT_CALL(*txn, DeleteRuleByHandle(std::string(cTable), std::string(cForwardChain), FWRuleHandle {10}));
     EXPECT_CALL(*txn, DeleteRuleByHandle(std::string(cTable), std::string(cForwardChain), FWRuleHandle {11}));
