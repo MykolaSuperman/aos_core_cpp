@@ -152,22 +152,35 @@ Error TrafficMonitor::StartInstanceMonitoring(
         std::string {cOutChainPrefix} + safeID,
     };
 
-    auto txn = mBackend->NewTxn();
-
     StagedTrafficData staged;
 
-    if (auto err = CreateInstanceChain(*txn, chains.mInChain, true, chains.mIP, cForwardChain, downloadLimit, staged);
-        !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
+    bool batched = false;
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        if (mBatchMode && mBatchTxn) {
+            if (auto err = BuildInstanceMonitoring(*mBatchTxn, chains, staged, downloadLimit, uploadLimit);
+                !err.IsNone()) {
+                return AOS_ERROR_WRAP(err);
+            }
+
+            mBatchInstances.emplace_back(instanceID.CStr());
+
+            batched = true;
+        }
     }
 
-    if (auto err = CreateInstanceChain(*txn, chains.mOutChain, false, chains.mIP, cForwardChain, uploadLimit, staged);
-        !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
+    if (!batched) {
+        auto txn = mBackend->NewTxn();
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
+        if (auto err = BuildInstanceMonitoring(*txn, chains, staged, downloadLimit, uploadLimit); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
+
+        if (auto err = txn->Commit(); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
     }
 
     PublishTrafficData(staged);
@@ -208,22 +221,35 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
         return AOS_ERROR_WRAP(err);
     }
 
-    auto txn = mBackend->NewTxn();
+    std::vector<nftables::FWRuleHandle> jumpHandles;
 
     for (const auto& r : forwardRules) {
         if (r.mRule.mAction == nftables::FWActionEnum::eJump
             && (r.mRule.mJumpTarget == chains.mInChain || r.mRule.mJumpTarget == chains.mOutChain)) {
-            txn->DeleteRuleByHandle(cTable, cForwardChain, r.mHandle);
+            jumpHandles.push_back(r.mHandle);
         }
     }
 
-    txn->FlushChain(cTable, chains.mInChain);
-    txn->DeleteChain(cTable, chains.mInChain);
-    txn->FlushChain(cTable, chains.mOutChain);
-    txn->DeleteChain(cTable, chains.mOutChain);
+    bool batched = false;
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        if (mBatchMode && mBatchTxn) {
+            DeleteInstanceMonitoring(*mBatchTxn, chains, jumpHandles);
+
+            batched = true;
+        }
+    }
+
+    if (!batched) {
+        auto txn = mBackend->NewTxn();
+
+        DeleteInstanceMonitoring(*txn, chains, jumpHandles);
+
+        if (auto err = txn->Commit(); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
     }
 
     {
@@ -243,6 +269,136 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
         }
 
         mInstanceChains.erase(instanceID.CStr());
+    }
+
+    return ErrorEnum::eNone;
+}
+
+Error TrafficMonitor::BeginBatch()
+{
+    LOG_DBG() << "Begin traffic monitor batch";
+
+    std::lock_guard<std::mutex> lock {mBatchMutex};
+
+    mBatchTxn = mBackend->NewTxn();
+
+    mBatchInstances.clear();
+    mAppliedHandles.clear();
+
+    mBatchMode = true;
+
+    return ErrorEnum::eNone;
+}
+
+Error TrafficMonitor::FlushBatch()
+{
+    LOG_DBG() << "Flush traffic monitor batch";
+
+    std::unique_ptr<nftables::FWTxnItf> txn;
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        mBatchMode = false;
+        txn        = std::move(mBatchTxn);
+    }
+
+    if (!txn) {
+        return ErrorEnum::eNone;
+    }
+
+    std::vector<nftables::FWRuleHandle> handles;
+
+    const auto err = txn->Commit(handles);
+
+    std::lock_guard<std::mutex> lock {mBatchMutex};
+
+    if (!err.IsNone()) {
+        mBatchInstances.clear();
+
+        return AOS_ERROR_WRAP(err);
+    }
+
+    mAppliedHandles.insert(handles.begin(), handles.end());
+
+    return ErrorEnum::eNone;
+}
+
+Error TrafficMonitor::Revert()
+{
+    LOG_DBG() << "Revert traffic monitor batch";
+
+    std::vector<std::string>         instances;
+    std::set<nftables::FWRuleHandle> handles;
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        instances = std::move(mBatchInstances);
+        handles   = std::move(mAppliedHandles);
+
+        mBatchInstances.clear();
+        mAppliedHandles.clear();
+    }
+
+    std::vector<std::pair<std::string, InstanceChains>> reverted;
+
+    {
+        std::shared_lock lock {mMutex};
+
+        for (const auto& instanceID : instances) {
+            if (auto it = mInstanceChains.find(instanceID); it != mInstanceChains.end()) {
+                reverted.emplace_back(instanceID, it->second);
+            }
+        }
+    }
+
+    if (reverted.empty()) {
+        return ErrorEnum::eNone;
+    }
+
+    std::vector<nftables::FWListedRule> forwardRules;
+
+    if (auto err = mBackend->ListChainRules(cTable, cForwardChain, forwardRules); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    std::set<std::string> chainNames;
+
+    for (const auto& [instanceID, chains] : reverted) {
+        chainNames.insert(chains.mInChain);
+        chainNames.insert(chains.mOutChain);
+    }
+
+    auto txn = mBackend->NewTxn();
+
+    for (const auto& r : forwardRules) {
+        const bool batchJump
+            = r.mRule.mAction == nftables::FWActionEnum::eJump && chainNames.count(r.mRule.mJumpTarget) != 0;
+
+        if (batchJump || handles.count(r.mHandle) != 0) {
+            txn->DeleteRuleByHandle(cTable, cForwardChain, r.mHandle);
+        }
+    }
+
+    for (const auto& chain : chainNames) {
+        txn->FlushChain(cTable, chain);
+        txn->DeleteChain(cTable, chain);
+    }
+
+    if (auto err = txn->Commit(); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    {
+        std::unique_lock lock {mMutex};
+
+        for (const auto& [instanceID, chains] : reverted) {
+            mTrafficData.erase(chains.mInChain);
+            mTrafficData.erase(chains.mOutChain);
+
+            mInstanceChains.erase(instanceID);
+        }
     }
 
     return ErrorEnum::eNone;
@@ -358,6 +514,35 @@ Error TrafficMonitor::CreateInstanceChain(nftables::FWTxnItf& txn, const std::st
     staged.emplace_back(chain, std::move(traffic));
 
     return ErrorEnum::eNone;
+}
+
+Error TrafficMonitor::BuildInstanceMonitoring(nftables::FWTxnItf& txn, const InstanceChains& chains,
+    StagedTrafficData& staged, uint64_t downloadLimit, uint64_t uploadLimit)
+{
+    if (auto err = CreateInstanceChain(txn, chains.mInChain, true, chains.mIP, cForwardChain, downloadLimit, staged);
+        !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    if (auto err = CreateInstanceChain(txn, chains.mOutChain, false, chains.mIP, cForwardChain, uploadLimit, staged);
+        !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    return ErrorEnum::eNone;
+}
+
+void TrafficMonitor::DeleteInstanceMonitoring(
+    nftables::FWTxnItf& txn, const InstanceChains& chains, const std::vector<nftables::FWRuleHandle>& jumpHandles)
+{
+    for (const auto handle : jumpHandles) {
+        txn.DeleteRuleByHandle(cTable, cForwardChain, handle);
+    }
+
+    txn.FlushChain(cTable, chains.mInChain);
+    txn.DeleteChain(cTable, chains.mInChain);
+    txn.FlushChain(cTable, chains.mOutChain);
+    txn.DeleteChain(cTable, chains.mOutChain);
 }
 
 void TrafficMonitor::PublishTrafficData(StagedTrafficData& staged)
