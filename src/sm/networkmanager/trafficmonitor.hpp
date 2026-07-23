@@ -109,6 +109,14 @@ public:
     Error FlushBatch() override;
 
     /**
+     * Discards the staged batch and leaves batch mode without applying anything,
+     * dropping the monitoring state the batch staged.
+     *
+     * @return Error.
+     */
+    Error AbortBatch() override;
+
+    /**
      * Deletes by handle everything the last flushed batch added, together with
      * the counter chains it created, and drops their monitoring state.
      *
@@ -152,6 +160,7 @@ private:
         uint64_t downloadLimit, uint64_t uploadLimit);
     void  DeleteInstanceMonitoring(
          nftables::FWTxnItf& txn, const InstanceChains& chains, const std::vector<nftables::FWRuleHandle>& jumpHandles);
+    void  DropBatchInstanceState(const std::vector<std::string>& instanceIDs);
     void  PublishTrafficData(StagedTrafficData& staged);
     Error AppendChainCounterRules(
         nftables::FWTxnItf& txn, const std::string& chain, bool isInChain, const std::string& address, bool disabled);
