@@ -206,7 +206,7 @@ TEST_F(TrafficMonitorTest, BatchStagesInstancesIntoSingleCommit)
     EXPECT_CALL(*txn, AddRule(std::string(cTable), std::string(cForwardChain), JumpTo(std::string("in_inst2"))));
     EXPECT_CALL(*txn, AddRule(std::string(cTable), std::string(cForwardChain), JumpTo(std::string("out_inst2"))));
     EXPECT_CALL(*txn, Commit()).Times(0);
-    EXPECT_CALL(*txn, Commit(An<std::vector<FWRuleHandle>&>())).WillOnce(Return(ErrorEnum::eNone));
+    EXPECT_CALL(*txn, Commit(An<std::vector<FWListedRule>&>())).WillOnce(Return(ErrorEnum::eNone));
 
     EXPECT_CALL(*mBackend, NewTxn()).WillOnce(Return(ByMove(std::move(txn))));
     EXPECT_CALL(*mStorage, GetTrafficMonitorData(_, _, _)).WillRepeatedly(Return(ErrorEnum::eNotFound));
@@ -251,7 +251,7 @@ TEST_F(TrafficMonitorTest, BatchStagesStopInstanceDeletes)
     EXPECT_CALL(*batchPtr, FlushChain(std::string(cTable), outChain));
     EXPECT_CALL(*batchPtr, DeleteChain(std::string(cTable), outChain));
     EXPECT_CALL(*batchPtr, Commit()).Times(0);
-    EXPECT_CALL(*batchPtr, Commit(An<std::vector<FWRuleHandle>&>())).WillOnce(Return(ErrorEnum::eNone));
+    EXPECT_CALL(*batchPtr, Commit(An<std::vector<FWListedRule>&>())).WillOnce(Return(ErrorEnum::eNone));
 
     ASSERT_EQ(mMonitor->BeginBatch(), ErrorEnum::eNone);
     ASSERT_EQ(mMonitor->StopInstanceMonitoring("test-instance"), ErrorEnum::eNone);
@@ -282,11 +282,15 @@ TEST_F(TrafficMonitorTest, RevertDeletesFlushedHandlesAndClearsInstanceState)
     EXPECT_CALL(*mStorage, GetTrafficMonitorData(_, _, _)).WillRepeatedly(Return(ErrorEnum::eNotFound));
     EXPECT_CALL(*mStorage, SetTrafficMonitorData(_, _, _)).Times(0);
 
-    EXPECT_CALL(*batchPtr, Commit(An<std::vector<FWRuleHandle>&>())).WillOnce([](std::vector<FWRuleHandle>& handles) {
-        handles = {FWRuleHandle {20}, FWRuleHandle {21}};
+    EXPECT_CALL(*batchPtr, Commit(An<std::vector<FWListedRule>&>()))
+        .WillOnce([inChain, outChain](std::vector<FWListedRule>& added) {
+            added = {
+                {{"", "", "", 0, "", FWActionEnum::eJump, inChain}, FWRuleHandle {20}},
+                {{"", "", "", 0, "", FWActionEnum::eJump, outChain}, FWRuleHandle {21}},
+            };
 
-        return Error(ErrorEnum::eNone);
-    });
+            return Error(ErrorEnum::eNone);
+        });
 
     ASSERT_EQ(mMonitor->BeginBatch(), ErrorEnum::eNone);
     ASSERT_EQ(mMonitor->StartInstanceMonitoring("inst1", "192.168.1.100", 0, 0), ErrorEnum::eNone);
@@ -341,7 +345,7 @@ TEST_F(TrafficMonitorTest, FailedFlushClearsStagedInstanceState)
         .WillOnce(Return(ByMove(std::move(retryTxn))));
     EXPECT_CALL(*mStorage, GetTrafficMonitorData(_, _, _)).WillRepeatedly(Return(ErrorEnum::eNotFound));
 
-    EXPECT_CALL(*batchPtr, Commit(An<std::vector<FWRuleHandle>&>())).WillOnce(Return(Error(ErrorEnum::eFailed)));
+    EXPECT_CALL(*batchPtr, Commit(An<std::vector<FWListedRule>&>())).WillOnce(Return(Error(ErrorEnum::eFailed)));
 
     ASSERT_EQ(mMonitor->BeginBatch(), ErrorEnum::eNone);
     ASSERT_EQ(mMonitor->StartInstanceMonitoring("inst1", "192.168.1.100", 0, 0), ErrorEnum::eNone);
