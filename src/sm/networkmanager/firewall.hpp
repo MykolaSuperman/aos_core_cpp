@@ -119,6 +119,13 @@ public:
     Error FlushBatch() override;
 
     /**
+     * Discards the staged batch and leaves batch mode without applying anything.
+     *
+     * @return Error.
+     */
+    Error AbortBatch() override;
+
+    /**
      * Deletes by handle everything the last flushed batch added, together with
      * the instance chains it created.
      *
