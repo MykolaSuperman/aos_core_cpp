@@ -11,6 +11,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -158,6 +159,8 @@ private:
     std::unique_ptr<nftables::FWTxnItf> mBatchTxn;
     std::set<std::string>               mBatchChains;
     std::set<nftables::FWRuleHandle>    mAppliedHandles;
+
+    std::unordered_map<std::string, std::pair<nftables::FWRuleHandle, nftables::FWRuleHandle>> mInstanceJumps;
 };
 
 } // namespace aos::sm::networkmanager

@@ -226,6 +226,12 @@ Error Firewall::Start()
         }
     }
 
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        mInstanceJumps.clear();
+    }
+
     mMasqueradeRules.clear();
 
     return ErrorEnum::eNone;
@@ -322,6 +328,12 @@ Error Firewall::Stop()
     // Keep the table and base chains (they outlive SM); drop only the
     // per-instance state we added. Nothing to do if the table is already gone.
     if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
+        {
+            std::lock_guard<std::mutex> lock {mBatchMutex};
+
+            mInstanceJumps.clear();
+        }
+
         mMasqueradeRules.clear();
 
         return ErrorEnum::eNone;
@@ -329,6 +341,12 @@ Error Firewall::Stop()
 
     if (auto err = ReconcileArtifacts(forwardRules); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        mInstanceJumps.clear();
     }
 
     mMasqueradeRules.clear();
@@ -453,8 +471,16 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
         return AOS_ERROR_WRAP(err);
     }
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
+    std::vector<nftables::FWRuleHandle> handles;
+
+    if (auto err = txn->Commit(handles); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    if (handles.size() >= 2) {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        mInstanceJumps[chain] = {handles[handles.size() - 2], handles[handles.size() - 1]};
     }
 
     return ErrorEnum::eNone;
@@ -507,22 +533,34 @@ Error Firewall::RemoveInstance(const String& instanceID)
 
     const auto chain = ChainName(instanceID);
 
-    std::vector<nftables::FWListedRule> forwardRules;
-
-    if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
     std::vector<nftables::FWRuleHandle> jumpHandles;
 
-    for (const auto& r : forwardRules) {
-        if (r.mRule.mAction == nftables::FWActionEnum::eJump && r.mRule.mJumpTarget == chain) {
-            jumpHandles.push_back(r.mHandle);
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        if (auto it = mInstanceJumps.find(chain); it != mInstanceJumps.end()) {
+            jumpHandles = {it->second.first, it->second.second};
+
+            mInstanceJumps.erase(it);
         }
     }
 
     if (jumpHandles.empty()) {
-        return ErrorEnum::eNone;
+        std::vector<nftables::FWListedRule> forwardRules;
+
+        if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
+
+        for (const auto& r : forwardRules) {
+            if (r.mRule.mAction == nftables::FWActionEnum::eJump && r.mRule.mJumpTarget == chain) {
+                jumpHandles.push_back(r.mHandle);
+            }
+        }
+
+        if (jumpHandles.empty()) {
+            return ErrorEnum::eNone;
+        }
     }
 
     {
@@ -579,9 +617,9 @@ Error Firewall::FlushBatch()
         return ErrorEnum::eNone;
     }
 
-    std::vector<nftables::FWRuleHandle> handles;
+    std::vector<nftables::FWListedRule> added;
 
-    const auto err = txn->Commit(handles);
+    const auto err = txn->Commit(added);
 
     std::lock_guard<std::mutex> lock {mBatchMutex};
 
@@ -591,7 +629,21 @@ Error Firewall::FlushBatch()
         return AOS_ERROR_WRAP(err);
     }
 
-    mAppliedHandles.insert(handles.begin(), handles.end());
+    std::unordered_map<std::string, std::vector<nftables::FWRuleHandle>> jumpsByChain;
+
+    for (const auto& r : added) {
+        mAppliedHandles.insert(r.mHandle);
+
+        if (r.mRule.mAction == nftables::FWActionEnum::eJump) {
+            jumpsByChain[r.mRule.mJumpTarget].push_back(r.mHandle);
+        }
+    }
+
+    for (const auto& [chain, hs] : jumpsByChain) {
+        if (hs.size() >= 2) {
+            mInstanceJumps[chain] = {hs[hs.size() - 2], hs[hs.size() - 1]};
+        }
+    }
 
     return ErrorEnum::eNone;
 }
@@ -627,6 +679,10 @@ Error Firewall::Revert()
 
         mBatchChains.clear();
         mAppliedHandles.clear();
+
+        for (const auto& chain : chains) {
+            mInstanceJumps.erase(chain);
+        }
     }
 
     if (chains.empty() && handles.empty()) {
@@ -712,8 +768,16 @@ Error Firewall::UpdateInstance(const String& instanceID, const InstanceFirewallP
         return AOS_ERROR_WRAP(err);
     }
 
-    if (auto err = txn->Commit(); !err.IsNone()) {
+    std::vector<nftables::FWRuleHandle> handles;
+
+    if (auto err = txn->Commit(handles); !err.IsNone()) {
         return AOS_ERROR_WRAP(err);
+    }
+
+    if (handles.size() >= 2) {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        mInstanceJumps[chain] = {handles[handles.size() - 2], handles[handles.size() - 1]};
     }
 
     return ErrorEnum::eNone;
