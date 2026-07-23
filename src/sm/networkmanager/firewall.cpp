@@ -596,6 +596,22 @@ Error Firewall::FlushBatch()
     return ErrorEnum::eNone;
 }
 
+Error Firewall::AbortBatch()
+{
+    LOG_DBG() << "Abort firewall batch";
+
+    std::lock_guard<std::mutex> lock {mBatchMutex};
+
+    mBatchMode = false;
+
+    mBatchTxn.reset();
+
+    mBatchChains.clear();
+    mAppliedHandles.clear();
+
+    return ErrorEnum::eNone;
+}
+
 Error Firewall::Revert()
 {
     LOG_DBG() << "Revert firewall batch";
