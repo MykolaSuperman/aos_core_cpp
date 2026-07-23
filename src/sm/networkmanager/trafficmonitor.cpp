@@ -311,15 +311,25 @@ Error TrafficMonitor::FlushBatch()
 
     const auto err = txn->Commit(handles);
 
-    std::lock_guard<std::mutex> lock {mBatchMutex};
+    std::vector<std::string> failedInstances;
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        if (!err.IsNone()) {
+            failedInstances = std::move(mBatchInstances);
+
+            mBatchInstances.clear();
+        } else {
+            mAppliedHandles.insert(handles.begin(), handles.end());
+        }
+    }
 
     if (!err.IsNone()) {
-        mBatchInstances.clear();
+        DropBatchInstanceState(failedInstances);
 
         return AOS_ERROR_WRAP(err);
     }
-
-    mAppliedHandles.insert(handles.begin(), handles.end());
 
     return ErrorEnum::eNone;
 }
