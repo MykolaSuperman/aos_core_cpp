@@ -322,6 +322,44 @@ TEST_F(TrafficMonitorTest, RevertDeletesFlushedHandlesAndClearsInstanceState)
     EXPECT_EQ(mMonitor->StartInstanceMonitoring("inst1", "192.168.1.100", 0, 0), ErrorEnum::eNone);
 }
 
+TEST_F(TrafficMonitorTest, FailedFlushClearsStagedInstanceState)
+{
+    ExpectInit();
+    ASSERT_EQ(mMonitor->Init(*mStorage, *mBackend), ErrorEnum::eNone);
+
+    const std::string inChain  = "in_inst1";
+    const std::string outChain = "out_inst1";
+
+    auto batchTxn = MakeTxn();
+    auto retryTxn = MakeTxn();
+
+    auto* batchPtr = batchTxn.get();
+    auto* retryPtr = retryTxn.get();
+
+    EXPECT_CALL(*mBackend, NewTxn())
+        .WillOnce(Return(ByMove(std::move(batchTxn))))
+        .WillOnce(Return(ByMove(std::move(retryTxn))));
+    EXPECT_CALL(*mStorage, GetTrafficMonitorData(_, _, _)).WillRepeatedly(Return(ErrorEnum::eNotFound));
+
+    EXPECT_CALL(*batchPtr, Commit(An<std::vector<FWRuleHandle>&>())).WillOnce(Return(Error(ErrorEnum::eFailed)));
+
+    ASSERT_EQ(mMonitor->BeginBatch(), ErrorEnum::eNone);
+    ASSERT_EQ(mMonitor->StartInstanceMonitoring("inst1", "192.168.1.100", 0, 0), ErrorEnum::eNone);
+
+    EXPECT_FALSE(mMonitor->FlushBatch().IsNone());
+
+    // Nothing was applied, so the per-instance retry must build and commit its
+    // own transaction instead of returning early for a known instance.
+    EXPECT_CALL(*retryPtr, AddChain(_)).Times(2);
+    EXPECT_CALL(*retryPtr, AddRule(std::string(cTable), inChain, _)).Times(AtLeast(1));
+    EXPECT_CALL(*retryPtr, AddRule(std::string(cTable), outChain, _)).Times(AtLeast(1));
+    EXPECT_CALL(*retryPtr, AddRule(std::string(cTable), std::string(cForwardChain), JumpTo(inChain)));
+    EXPECT_CALL(*retryPtr, AddRule(std::string(cTable), std::string(cForwardChain), JumpTo(outChain)));
+    EXPECT_CALL(*retryPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
+
+    EXPECT_EQ(mMonitor->StartInstanceMonitoring("inst1", "192.168.1.100", 0, 0), ErrorEnum::eNone);
+}
+
 TEST_F(TrafficMonitorTest, FlushBatchAndRevertWithoutBeginAreNoOp)
 {
     ExpectInit();
