@@ -215,18 +215,22 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
         chains = it->second;
     }
 
-    std::vector<nftables::FWListedRule> forwardRules;
-
-    if (auto err = mBackend->ListChainRules(cTable, cForwardChain, forwardRules); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
-    }
-
     std::vector<nftables::FWRuleHandle> jumpHandles;
 
-    for (const auto& r : forwardRules) {
-        if (r.mRule.mAction == nftables::FWActionEnum::eJump
-            && (r.mRule.mJumpTarget == chains.mInChain || r.mRule.mJumpTarget == chains.mOutChain)) {
-            jumpHandles.push_back(r.mHandle);
+    if (chains.mInHandle != 0 && chains.mOutHandle != 0) {
+        jumpHandles = {chains.mInHandle, chains.mOutHandle};
+    } else {
+        std::vector<nftables::FWListedRule> forwardRules;
+
+        if (auto err = mBackend->ListChainRules(cTable, cForwardChain, forwardRules); !err.IsNone()) {
+            return AOS_ERROR_WRAP(err);
+        }
+
+        for (const auto& r : forwardRules) {
+            if (r.mRule.mAction == nftables::FWActionEnum::eJump
+                && (r.mRule.mJumpTarget == chains.mInChain || r.mRule.mJumpTarget == chains.mOutChain)) {
+                jumpHandles.push_back(r.mHandle);
+            }
         }
     }
 
@@ -307,11 +311,20 @@ Error TrafficMonitor::FlushBatch()
         return ErrorEnum::eNone;
     }
 
-    std::vector<nftables::FWRuleHandle> handles;
+    std::vector<nftables::FWListedRule> added;
 
-    const auto err = txn->Commit(handles);
+    const auto err = txn->Commit(added);
+
+    std::unordered_map<std::string, nftables::FWRuleHandle> jumpByChain;
+
+    for (const auto& r : added) {
+        if (r.mRule.mAction == nftables::FWActionEnum::eJump) {
+            jumpByChain[r.mRule.mJumpTarget] = r.mHandle;
+        }
+    }
 
     std::vector<std::string> failedInstances;
+    std::vector<std::string> committedInstances;
 
     {
         std::lock_guard<std::mutex> lock {mBatchMutex};
@@ -321,7 +334,11 @@ Error TrafficMonitor::FlushBatch()
 
             mBatchInstances.clear();
         } else {
-            mAppliedHandles.insert(handles.begin(), handles.end());
+            for (const auto& r : added) {
+                mAppliedHandles.insert(r.mHandle);
+            }
+
+            committedInstances = mBatchInstances;
         }
     }
 
@@ -329,6 +346,25 @@ Error TrafficMonitor::FlushBatch()
         DropBatchInstanceState(failedInstances);
 
         return AOS_ERROR_WRAP(err);
+    }
+
+    {
+        std::unique_lock lock {mMutex};
+
+        for (const auto& instanceID : committedInstances) {
+            auto it = mInstanceChains.find(instanceID);
+            if (it == mInstanceChains.end()) {
+                continue;
+            }
+
+            if (auto j = jumpByChain.find(it->second.mInChain); j != jumpByChain.end()) {
+                it->second.mInHandle = j->second;
+            }
+
+            if (auto j = jumpByChain.find(it->second.mOutChain); j != jumpByChain.end()) {
+                it->second.mOutHandle = j->second;
+            }
+        }
     }
 
     return ErrorEnum::eNone;

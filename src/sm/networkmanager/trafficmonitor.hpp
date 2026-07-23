@@ -145,9 +145,11 @@ private:
     };
 
     struct InstanceChains {
-        std::string mIP;
-        std::string mInChain;
-        std::string mOutChain;
+        std::string            mIP;
+        std::string            mInChain;
+        std::string            mOutChain;
+        nftables::FWRuleHandle mInHandle {};
+        nftables::FWRuleHandle mOutHandle {};
     };
 
     using StagedTrafficData = std::vector<std::pair<std::string, TrafficData>>;
