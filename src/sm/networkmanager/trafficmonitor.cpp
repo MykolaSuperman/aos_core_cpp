@@ -324,6 +324,30 @@ Error TrafficMonitor::FlushBatch()
     return ErrorEnum::eNone;
 }
 
+Error TrafficMonitor::AbortBatch()
+{
+    LOG_DBG() << "Abort traffic monitor batch";
+
+    std::vector<std::string> instances;
+
+    {
+        std::lock_guard<std::mutex> lock {mBatchMutex};
+
+        mBatchMode = false;
+
+        mBatchTxn.reset();
+
+        instances = std::move(mBatchInstances);
+
+        mBatchInstances.clear();
+        mAppliedHandles.clear();
+    }
+
+    DropBatchInstanceState(instances);
+
+    return ErrorEnum::eNone;
+}
+
 Error TrafficMonitor::Revert()
 {
     LOG_DBG() << "Revert traffic monitor batch";
@@ -390,16 +414,7 @@ Error TrafficMonitor::Revert()
         return AOS_ERROR_WRAP(err);
     }
 
-    {
-        std::unique_lock lock {mMutex};
-
-        for (const auto& [instanceID, chains] : reverted) {
-            mTrafficData.erase(chains.mInChain);
-            mTrafficData.erase(chains.mOutChain);
-
-            mInstanceChains.erase(instanceID);
-        }
-    }
+    DropBatchInstanceState(instances);
 
     return ErrorEnum::eNone;
 }
@@ -543,6 +558,23 @@ void TrafficMonitor::DeleteInstanceMonitoring(
     txn.DeleteChain(cTable, chains.mInChain);
     txn.FlushChain(cTable, chains.mOutChain);
     txn.DeleteChain(cTable, chains.mOutChain);
+}
+
+void TrafficMonitor::DropBatchInstanceState(const std::vector<std::string>& instanceIDs)
+{
+    std::unique_lock lock {mMutex};
+
+    for (const auto& instanceID : instanceIDs) {
+        auto it = mInstanceChains.find(instanceID);
+        if (it == mInstanceChains.end()) {
+            continue;
+        }
+
+        mTrafficData.erase(it->second.mInChain);
+        mTrafficData.erase(it->second.mOutChain);
+
+        mInstanceChains.erase(it);
+    }
 }
 
 void TrafficMonitor::PublishTrafficData(StagedTrafficData& staged)
