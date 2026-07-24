@@ -475,13 +475,26 @@ Error NFTables::RunBufferEchoRules(const std::string& cmd, std::vector<FWListedR
     const auto         output = ctx.OutputBuffer();
     std::istringstream iss(output);
     std::string        line;
+    const std::regex   jumpRe(R"(\bjump\s+(\S+))");
+    const std::regex   handleRe(R"(#\s+handle\s+(\d+))");
 
     while (std::getline(iss, line)) {
-        FWListedRule listed {};
-
-        if (ParseRuleLine(line, listed)) {
-            rules.push_back(std::move(listed));
+        std::smatch jm;
+        if (!std::regex_search(line, jm, jumpRe)) {
+            continue;
         }
+
+        std::smatch hm;
+        if (!std::regex_search(line, hm, handleRe)) {
+            continue;
+        }
+
+        FWListedRule listed {};
+        listed.mRule.mAction     = FWActionEnum::eJump;
+        listed.mRule.mJumpTarget = jm[1];
+        listed.mHandle           = static_cast<FWRuleHandle>(std::stoull(hm[1]));
+
+        rules.push_back(std::move(listed));
     }
 
     return ErrorEnum::eNone;
