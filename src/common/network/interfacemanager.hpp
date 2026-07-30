@@ -152,6 +152,15 @@ public:
     Error Init(crypto::RandomItf& random);
 
     /**
+     * Returns link attributes as they are on the system.
+     *
+     * @param ifname interface name.
+     * @param[out] info link attributes.
+     * @return Error, eNotFound if the link doesn't exist.
+     */
+    Error GetLink(const String& ifname, sm::networkmanager::LinkInfo& info) const override;
+
+    /**
      * Removes interface.
      *
      * @param ifname interface name.

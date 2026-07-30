@@ -157,6 +157,63 @@ Error InterfaceManager::Init(crypto::RandomItf& random)
     return ErrorEnum::eNone;
 }
 
+Error InterfaceManager::GetLink(const String& ifname, sm::networkmanager::LinkInfo& info) const
+{
+    auto [sock, err] = CreateNetlinkSocket();
+    if (!err.IsNone()) {
+        return err;
+    }
+
+    nl_cache* cacheRaw;
+
+    if (auto ret = rtnl_link_alloc_cache(sock.get(), AF_UNSPEC, &cacheRaw); ret < 0) {
+        return NLToAosErr(ret, "failed to allocate link cache");
+    }
+
+    [[maybe_unused]] auto cleanupCache = DeferRelease(cacheRaw, [](nl_cache* cache) { nl_cache_free(cache); });
+
+    auto link = DeferRelease(rtnl_link_get_by_name(cacheRaw, ifname.CStr()), rtnl_link_put);
+    if (!link) {
+        return Error(ErrorEnum::eNotFound, "link not found");
+    }
+
+    if (err = info.mName.Assign(ifname); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    info.mKind = sm::networkmanager::LinkKindEnum::eUnknown;
+
+    if (const auto* kind = rtnl_link_get_type(link.Get()); kind != nullptr) {
+        if (err = info.mKind.FromString(kind); !err.IsNone()) {
+            info.mKind = sm::networkmanager::LinkKindEnum::eUnknown;
+        }
+    }
+
+    info.mMaster.Clear();
+
+    if (const auto masterIndex = rtnl_link_get_master(link.Get()); masterIndex > 0) {
+        char masterName[IFNAMSIZ] = {};
+
+        if (rtnl_link_i2name(cacheRaw, masterIndex, masterName, sizeof(masterName)) != nullptr) {
+            if (err = info.mMaster.Assign(masterName); !err.IsNone()) {
+                return AOS_ERROR_WRAP(err);
+            }
+        }
+    }
+
+    info.mVlanID = 0;
+
+    if (info.mKind == sm::networkmanager::LinkKindEnum::eVlan) {
+        if (const auto vlanID = rtnl_link_vlan_get_id(link.Get()); vlanID >= 0) {
+            info.mVlanID = static_cast<uint64_t>(vlanID);
+        }
+    }
+
+    info.mUp = (rtnl_link_get_flags(link.Get()) & IFF_UP) != 0;
+
+    return ErrorEnum::eNone;
+}
+
 Error InterfaceManager::DeleteLink(const String& ifname)
 {
     LOG_DBG() << "Remove interface: ifname=" << ifname;
