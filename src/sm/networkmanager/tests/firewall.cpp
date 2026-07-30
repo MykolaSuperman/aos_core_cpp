@@ -150,23 +150,36 @@ TEST_F(FirewallTest, StartAdoptsExistingTableWithoutRecreating)
     forwardRules.push_back({{"", "", "", 0, "", FWActionEnum::eDrop, ""}, FWRuleHandle {1}});
     forwardRules.push_back({{"", "", "", 0, "", FWActionEnum::eAccept, ""}, FWRuleHandle {2}});
 
-    std::vector<FWListedRule> postRules;
-
     EXPECT_CALL(mBackend, ListChainRules(_, std::string("forward"), _))
         .WillOnce(DoAll(SetArgReferee<2>(forwardRules), Return(ErrorEnum::eNone)));
-    EXPECT_CALL(mBackend, ListChainRules(_, std::string("postrouting"), _))
-        .WillOnce(DoAll(SetArgReferee<2>(postRules), Return(ErrorEnum::eNone)));
     EXPECT_CALL(mBackend, NewTxn()).Times(0);
 
     EXPECT_TRUE(mFirewall.Start().IsNone());
 }
 
-TEST_F(FirewallTest, StartAdoptReconcilesStaleInstanceState)
+TEST_F(FirewallTest, StartKeepsRulesLeftByPreviousLifetime)
+{
+    std::vector<FWListedRule> forwardRules;
+    forwardRules.push_back({{"10.0.0.5", "", "", 0, "", FWActionEnum::eJump, "instance_alive"}, FWRuleHandle {30}});
+
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("forward"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(forwardRules), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(mBackend, NewTxn()).Times(0);
+
+    EXPECT_TRUE(mFirewall.Start().IsNone());
+}
+
+/***********************************************************************************************************************
+ * RemoveOrphans
+ **********************************************************************************************************************/
+
+TEST_F(FirewallTest, RemoveOrphansDropsUnknownInstanceChainsAndKeepsKnownOnes)
 {
     std::vector<FWListedRule> forwardRules;
     forwardRules.push_back({{"", "", "", 0, "", FWActionEnum::eDrop, ""}, FWRuleHandle {1}});
-    forwardRules.push_back({{"10.0.0.5", "", "", 0, "", FWActionEnum::eJump, "instance_stale"}, FWRuleHandle {30}});
-    forwardRules.push_back({{"", "10.0.0.5", "", 0, "", FWActionEnum::eJump, "instance_stale"}, FWRuleHandle {31}});
+    forwardRules.push_back({{"10.0.0.5", "", "", 0, "", FWActionEnum::eJump, "instance_alive"}, FWRuleHandle {20}});
+    forwardRules.push_back({{"10.0.0.6", "", "", 0, "", FWActionEnum::eJump, "instance_stale"}, FWRuleHandle {30}});
+    forwardRules.push_back({{"", "10.0.0.6", "", 0, "", FWActionEnum::eJump, "instance_stale"}, FWRuleHandle {31}});
 
     std::vector<FWListedRule> postRules;
 
@@ -184,8 +197,65 @@ TEST_F(FirewallTest, StartAdoptReconcilesStaleInstanceState)
     EXPECT_CALL(*mTxnPtr, DeleteChain(_, std::string("instance_stale")));
     EXPECT_CALL(*mTxnPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
 
-    // No AddTable / AddBaseChain / ct AddRule: the table is adopted, not recreated.
-    EXPECT_TRUE(mFirewall.Start().IsNone());
+    StaticArray<StaticString<cIDLen>, 2> knownInstances;
+    knownInstances.PushBack("alive");
+
+    StaticArray<MasqueradeParams, 2> knownMasquerades;
+
+    EXPECT_TRUE(mFirewall.RemoveOrphans(knownInstances, knownMasquerades).IsNone());
+}
+
+TEST_F(FirewallTest, RemoveOrphansDropsUnknownMasqueradeOnly)
+{
+    std::vector<FWListedRule> forwardRules;
+
+    std::vector<FWListedRule> postRules;
+    postRules.push_back(
+        {{"10.0.0.0/24", "", "", 0, "br-known", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {40}});
+    postRules.push_back(
+        {{"10.0.1.0/24", "", "", 0, "br-gone", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {41}});
+
+    auto tx = NewMockTx();
+
+    InSequence seq;
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("forward"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(forwardRules), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("postrouting"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(postRules), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(mBackend, NewTxn()).WillOnce(Return(ByMove(std::move(tx))));
+    EXPECT_CALL(*mTxnPtr, DeleteRuleByHandle(_, std::string("postrouting"), FWRuleHandle {41}));
+    EXPECT_CALL(*mTxnPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
+
+    StaticArray<StaticString<cIDLen>, 2> knownInstances;
+
+    StaticArray<MasqueradeParams, 2> knownMasquerades;
+    knownMasquerades.PushBack({"10.0.0.0/24", "br-known"});
+
+    EXPECT_TRUE(mFirewall.RemoveOrphans(knownInstances, knownMasquerades).IsNone());
+}
+
+TEST_F(FirewallTest, AdoptedMasqueradeIsNotAddedAgain)
+{
+    std::vector<FWListedRule> forwardRules;
+
+    std::vector<FWListedRule> postRules;
+    postRules.push_back(
+        {{"10.0.0.0/24", "", "", 0, "br-known", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {40}});
+
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("forward"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(forwardRules), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("postrouting"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(postRules), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(mBackend, NewTxn()).Times(0);
+
+    StaticArray<StaticString<cIDLen>, 2> knownInstances;
+
+    StaticArray<MasqueradeParams, 2> knownMasquerades;
+    knownMasquerades.PushBack({"10.0.0.0/24", "br-known"});
+
+    ASSERT_TRUE(mFirewall.RemoveOrphans(knownInstances, knownMasquerades).IsNone());
+
+    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "br-known").IsNone());
 }
 
 TEST_F(FirewallTest, StartFallbackCreatesSkeletonWithForwardPolicyDrop)
