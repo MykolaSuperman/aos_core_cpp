@@ -216,19 +216,101 @@ Error Firewall::Start()
     std::vector<nftables::FWListedRule> forwardRules;
 
     // The table is provisioned ahead of SM and outlives it, so a listable
-    // forward chain means it already exists: adopt it and only clear our own
-    // stale artifacts. If it is absent, build a fail-closed skeleton ourselves.
-    if (mBackend->ListChainRules(mTable, cForwardChain, forwardRules).IsNone()) {
-        if (auto err = ReconcileArtifacts(forwardRules); !err.IsNone()) {
+    // forward chain means it already exists: adopt it as is. Rules left by a
+    // crashed SM still protect the instances that kept running, so they are
+    // reaped later by RemoveOrphans rather than dropped here. If the table is
+    // absent, build a fail-closed skeleton ourselves.
+    if (!mBackend->ListChainRules(mTable, cForwardChain, forwardRules).IsNone()) {
+        if (auto err = CreateSkeleton(); !err.IsNone()) {
             return AOS_ERROR_WRAP(err);
         }
-    } else if (auto err = CreateSkeleton(); !err.IsNone()) {
-        return AOS_ERROR_WRAP(err);
     }
 
     mMasqueradeRules.clear();
 
     return ErrorEnum::eNone;
+}
+
+Error Firewall::RemoveOrphans(
+    const Array<StaticString<cIDLen>>& knownInstanceIDs, const Array<MasqueradeParams>& knownMasquerades)
+{
+    LOG_DBG() << "Remove orphan firewall artifacts";
+
+    std::vector<nftables::FWListedRule> forwardRules;
+
+    if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
+        return ErrorEnum::eNone;
+    }
+
+    std::set<std::string> knownChains;
+
+    for (const auto& instanceID : knownInstanceIDs) {
+        knownChains.emplace(ChainName(instanceID));
+    }
+
+    std::vector<nftables::FWRuleHandle> jumpHandles;
+    std::set<std::string>               orphanChains;
+
+    for (const auto& r : forwardRules) {
+        if (r.mRule.mAction != nftables::FWActionEnum::eJump || r.mRule.mJumpTarget.rfind(cInstanceChainPrefix, 0) != 0
+            || knownChains.count(r.mRule.mJumpTarget) != 0) {
+            continue;
+        }
+
+        jumpHandles.push_back(r.mHandle);
+        orphanChains.insert(r.mRule.mJumpTarget);
+    }
+
+    std::vector<nftables::FWListedRule> postRules;
+
+    if (auto err = mBackend->ListChainRules(mTable, cPostroutingChain, postRules); !err.IsNone()) {
+        return AOS_ERROR_WRAP(err);
+    }
+
+    std::set<std::pair<std::string, std::string>> known;
+
+    for (const auto& masquerade : knownMasquerades) {
+        known.emplace(masquerade.mSubnet.CStr(), masquerade.mOutIfName.CStr());
+    }
+
+    std::vector<nftables::FWRuleHandle> masqueradeHandles;
+
+    mMasqueradeRules.clear();
+
+    for (const auto& r : postRules) {
+        if (r.mRule.mAction != nftables::FWActionEnum::eMasquerade) {
+            continue;
+        }
+
+        std::pair<std::string, std::string> key {r.mRule.mSrcAddr, r.mRule.mOIFName};
+
+        if (known.count(key) != 0 && mMasqueradeRules.insert(key).second) {
+            continue;
+        }
+
+        masqueradeHandles.push_back(r.mHandle);
+    }
+
+    if (jumpHandles.empty() && orphanChains.empty() && masqueradeHandles.empty()) {
+        return ErrorEnum::eNone;
+    }
+
+    auto txn = mBackend->NewTxn();
+
+    for (const auto handle : jumpHandles) {
+        txn->DeleteRuleByHandle(mTable, cForwardChain, handle);
+    }
+
+    for (const auto& chain : orphanChains) {
+        txn->FlushChain(mTable, chain);
+        txn->DeleteChain(mTable, chain);
+    }
+
+    for (const auto handle : masqueradeHandles) {
+        txn->DeleteRuleByHandle(mTable, cPostroutingChain, handle);
+    }
+
+    return txn->Commit();
 }
 
 Error Firewall::Stop()

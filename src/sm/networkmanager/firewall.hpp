@@ -45,6 +45,16 @@ public:
     Error Stop() override;
 
     /**
+     * Removes the instance chains and masquerade rules that are not known.
+     *
+     * @param knownInstanceIDs instance ids whose chains must be kept.
+     * @param knownMasquerades masquerade rules that must be kept.
+     * @return Error.
+     */
+    Error RemoveOrphans(
+        const Array<StaticString<cIDLen>>& knownInstanceIDs, const Array<MasqueradeParams>& knownMasquerades) override;
+
+    /**
      * Adds a per-instance chain with input/output rules.
      *
      * @param instanceID instance id.
