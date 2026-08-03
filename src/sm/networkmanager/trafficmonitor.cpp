@@ -157,7 +157,7 @@ Error TrafficMonitor::StartInstanceMonitoring(
     bool batched = false;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         if (mBatchMode && mBatchTxn) {
             if (auto err = BuildInstanceMonitoring(*mBatchTxn, chains, staged, downloadLimit, uploadLimit);
@@ -237,7 +237,7 @@ Error TrafficMonitor::StopInstanceMonitoring(const String& instanceID)
     bool batched = false;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         if (mBatchMode && mBatchTxn) {
             DeleteInstanceMonitoring(*mBatchTxn, chains, jumpHandles);
@@ -282,7 +282,7 @@ Error TrafficMonitor::BeginBatch()
 {
     LOG_DBG() << "Begin traffic monitor batch";
 
-    std::lock_guard<std::mutex> lock {mBatchMutex};
+    std::lock_guard lock {mBatchMutex};
 
     mBatchTxn = mBackend->NewTxn();
 
@@ -301,7 +301,7 @@ Error TrafficMonitor::FlushBatch()
     std::unique_ptr<nftables::FWTxnItf> txn;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         mBatchMode = false;
         txn        = std::move(mBatchTxn);
@@ -327,7 +327,7 @@ Error TrafficMonitor::FlushBatch()
     std::vector<std::string> committedInstances;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         if (!err.IsNone()) {
             failedInstances = std::move(mBatchInstances);
@@ -377,7 +377,7 @@ Error TrafficMonitor::AbortBatch()
     std::vector<std::string> instances;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         mBatchMode = false;
 
@@ -402,7 +402,7 @@ Error TrafficMonitor::Revert()
     std::set<nftables::FWRuleHandle> handles;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         instances = std::move(mBatchInstances);
         handles   = std::move(mAppliedHandles);

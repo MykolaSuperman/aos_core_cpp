@@ -227,7 +227,7 @@ Error Firewall::Start()
     }
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         mInstanceJumps.clear();
     }
@@ -329,7 +329,7 @@ Error Firewall::Stop()
     // per-instance state we added. Nothing to do if the table is already gone.
     if (auto err = mBackend->ListChainRules(mTable, cForwardChain, forwardRules); !err.IsNone()) {
         {
-            std::lock_guard<std::mutex> lock {mBatchMutex};
+            std::lock_guard lock {mBatchMutex};
 
             mInstanceJumps.clear();
         }
@@ -344,7 +344,7 @@ Error Firewall::Stop()
     }
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         mInstanceJumps.clear();
     }
@@ -452,7 +452,7 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
     const auto chain = ChainName(instanceID);
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         if (mBatchMode && mBatchTxn) {
             if (auto err = AppendInstanceChain(*mBatchTxn, chain, params); !err.IsNone()) {
@@ -478,7 +478,7 @@ Error Firewall::AddInstance(const String& instanceID, const InstanceFirewallPara
     }
 
     if (handles.size() >= 2) {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         mInstanceJumps[chain] = {handles[handles.size() - 2], handles[handles.size() - 1]};
     }
@@ -536,7 +536,7 @@ Error Firewall::RemoveInstance(const String& instanceID)
     std::vector<nftables::FWRuleHandle> jumpHandles;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         if (auto it = mInstanceJumps.find(chain); it != mInstanceJumps.end()) {
             jumpHandles = {it->second.first, it->second.second};
@@ -564,7 +564,7 @@ Error Firewall::RemoveInstance(const String& instanceID)
     }
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         if (mBatchMode && mBatchTxn) {
             DeleteInstanceChain(*mBatchTxn, chain, jumpHandles);
@@ -588,7 +588,7 @@ Error Firewall::BeginBatch()
 {
     LOG_DBG() << "Begin firewall batch";
 
-    std::lock_guard<std::mutex> lock {mBatchMutex};
+    std::lock_guard lock {mBatchMutex};
 
     mBatchTxn = mBackend->NewTxn();
 
@@ -607,7 +607,7 @@ Error Firewall::FlushBatch()
     std::unique_ptr<nftables::FWTxnItf> txn;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         mBatchMode = false;
         txn        = std::move(mBatchTxn);
@@ -621,7 +621,7 @@ Error Firewall::FlushBatch()
 
     const auto err = txn->Commit(added);
 
-    std::lock_guard<std::mutex> lock {mBatchMutex};
+    std::lock_guard lock {mBatchMutex};
 
     if (!err.IsNone()) {
         mBatchChains.clear();
@@ -652,7 +652,7 @@ Error Firewall::AbortBatch()
 {
     LOG_DBG() << "Abort firewall batch";
 
-    std::lock_guard<std::mutex> lock {mBatchMutex};
+    std::lock_guard lock {mBatchMutex};
 
     mBatchMode = false;
 
@@ -672,7 +672,7 @@ Error Firewall::Revert()
     std::set<nftables::FWRuleHandle> handles;
 
     {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         chains  = std::move(mBatchChains);
         handles = std::move(mAppliedHandles);
@@ -775,7 +775,7 @@ Error Firewall::UpdateInstance(const String& instanceID, const InstanceFirewallP
     }
 
     if (handles.size() >= 2) {
-        std::lock_guard<std::mutex> lock {mBatchMutex};
+        std::lock_guard lock {mBatchMutex};
 
         mInstanceJumps[chain] = {handles[handles.size() - 2], handles[handles.size() - 1]};
     }
