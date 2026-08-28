@@ -300,7 +300,7 @@ Error Firewall::RemoveOrphans(
 
         std::pair<std::string, std::string> key {r.mRule.mSrcAddr, r.mRule.mOIFName};
 
-        if (known.count(key) != 0 && mMasqueradeRules.insert(key).second) {
+        if (!r.mRule.mOIFNeg && known.count(key) != 0 && mMasqueradeRules.insert(key).second) {
             continue;
         }
 
@@ -806,7 +806,7 @@ Error Firewall::AddMasquerade(const String& subnet, const String& outIf)
     nftables::FWRule r {};
     r.mSrcAddr = key.first;
     r.mOIFName = key.second;
-    r.mOIFNeg  = true;
+    r.mOIFNeg  = false;
     r.mAction  = nftables::FWActionEnum::eMasquerade;
 
     auto txn = mBackend->NewTxn();
@@ -837,8 +837,8 @@ Error Firewall::RemoveMasquerade(const String& subnet, const String& outIf)
     }
 
     const auto it = std::find_if(postRules.begin(), postRules.end(), [&key](const nftables::FWListedRule& r) {
-        return r.mRule.mAction == nftables::FWActionEnum::eMasquerade && r.mRule.mSrcAddr == key.first
-            && r.mRule.mOIFName == key.second;
+        return r.mRule.mAction == nftables::FWActionEnum::eMasquerade && !r.mRule.mOIFNeg
+            && r.mRule.mSrcAddr == key.first && r.mRule.mOIFName == key.second;
     });
 
     if (it == postRules.end()) {

@@ -262,24 +262,25 @@ Error NetworkManager::AllocateInstanceNetwork(const InstanceIdent& instanceIdent
 
         StaticString<cIPLen>                                 migratedIP;
         StaticArray<StaticString<cIPLen>, cMaxNumDNSServers> migratedDNS;
-        Instance                                             instance;
 
-        instance.mNetworkID     = networkID;
-        instance.mNodeID        = nodeID;
-        instance.mInstanceIdent = instanceIdent;
+        auto instance = std::make_unique<Instance>();
+
+        instance->mNetworkID     = networkID;
+        instance->mNodeID        = nodeID;
+        instance->mInstanceIdent = instanceIdent;
 
         if (MigrateInstanceFromOtherNode(instanceIdent, it->second, nodeID.CStr(), migratedIP, migratedDNS)) {
-            IP                   = migratedIP.CStr();
-            result.mIP           = migratedIP;
-            result.mDNSServers   = migratedDNS;
-            instance.mDNSServers = migratedDNS;
+            IP                    = migratedIP.CStr();
+            result.mIP            = migratedIP;
+            result.mDNSServers    = migratedDNS;
+            instance->mDNSServers = migratedDNS;
         } else {
             auto dnsIP = mDNSServer->GetIP();
 
             IP         = mIpSubnet.GetAvailableIP(networkID.CStr());
             result.mIP = IP.c_str();
             result.mDNSServers.PushBack(dnsIP.c_str());
-            instance.mDNSServers.PushBack(dnsIP.c_str());
+            instance->mDNSServers.PushBack(dnsIP.c_str());
         }
 
         auto rollbackIP = DeferRelease(&IP, [this, &networkID, &err](const std::string* ip) {
@@ -288,13 +289,13 @@ Error NetworkManager::AllocateInstanceNetwork(const InstanceIdent& instanceIdent
             }
         });
 
-        instance.mIP = IP.c_str();
+        instance->mIP = IP.c_str();
 
-        if (err = ParseExposedPorts(serviceData.mExposedPorts, instance); !err.IsNone()) {
+        if (err = ParseExposedPorts(serviceData.mExposedPorts, *instance); !err.IsNone()) {
             return err;
         }
 
-        itHost->second.mInstances.emplace(instanceIdent, instance);
+        itHost->second.mInstances.emplace(instanceIdent, *instance);
 
         auto rollbackInstance = DeferRelease(&instanceIdent, [this, &itHost, &IP, &err](const InstanceIdent* ident) {
             if (!err.IsNone()) {
@@ -322,7 +323,7 @@ Error NetworkManager::AllocateInstanceNetwork(const InstanceIdent& instanceIdent
             return err;
         }
 
-        if (err = mStorage->AddInstance(instance); !err.IsNone()) {
+        if (err = mStorage->AddInstance(*instance); !err.IsNone()) {
             return AOS_ERROR_WRAP(err);
         }
 
@@ -558,7 +559,9 @@ Error NetworkManager::ParseExposedPorts(const Array<StaticString<cExposedPortLen
             exposedPortInfo.mProtocol = portConfig[1];
         }
 
-        instance.mExposedPorts.PushBack(exposedPortInfo);
+        if (auto err = instance.mExposedPorts.PushBack(exposedPortInfo); !err.IsNone()) {
+            return AOS_ERROR_WRAP(Error(err, "too many exposed ports"));
+        }
     }
 
     return ErrorEnum::eNone;

@@ -690,6 +690,146 @@ TEST_F(CMNetworkManagerTest, AllocateInstanceNetwork_CrossNetworkPortRange_Succe
     EXPECT_EQ(result2.mFirewallRules[3].mDstPort, "7400:7401");
 }
 
+TEST_F(CMNetworkManagerTest, AllocateInstanceNetwork_RTPSPortRangeOverManyExposedPorts)
+{
+    InstanceIdent instanceIdent1;
+    instanceIdent1.mItemID    = "service1";
+    instanceIdent1.mSubjectID = "subject1";
+    instanceIdent1.mInstance  = 1;
+
+    InstanceIdent instanceIdent2;
+    instanceIdent2.mItemID    = "service2";
+    instanceIdent2.mSubjectID = "subject2";
+    instanceIdent2.mInstance  = 1;
+
+    String networkID1 = "network1";
+    String networkID2 = "network2";
+    String nodeID     = "node1";
+
+    constexpr uint16_t cFirstPort = 7410;
+    constexpr uint16_t cLastPort  = 7450;
+
+    auto instanceData1 = std::make_unique<UpdateItemNetworkParams>();
+
+    for (uint16_t port = cFirstPort; port <= cLastPort; ++port) {
+        ASSERT_TRUE(instanceData1->mExposedPorts.PushBack((std::to_string(port) + "/udp").c_str()).IsNone());
+    }
+
+    ASSERT_GT(instanceData1->mExposedPorts.Size(), 8U);
+
+    auto instanceData2 = std::make_unique<UpdateItemNetworkParams>();
+    instanceData2->mAllowedConnections.PushBack("service1/7410:7450/udp");
+    instanceData2->mAllowedConnections.PushBack("service1/7410/udp");
+
+    InstanceNetworkAllocation result1, result2;
+
+    EXPECT_CALL(*mStorage, GetNetworks(_)).WillOnce(Invoke([](Array<Network>& networks) -> Error {
+        Network network1;
+        network1.mNetworkID = "network1";
+        network1.mSubnet    = "172.17.0.0/16";
+        network1.mVlanID    = 1000;
+        networks.PushBack(network1);
+
+        Network network2;
+        network2.mNetworkID = "network2";
+        network2.mSubnet    = "172.18.0.0/16";
+        network2.mVlanID    = 2000;
+        networks.PushBack(network2);
+        return ErrorEnum::eNone;
+    }));
+
+    EXPECT_CALL(*mStorage, GetHosts(_, _))
+        .WillRepeatedly(Invoke([](const String& networkID, Array<Host>& hosts) -> Error {
+            Host host;
+            host.mNodeID = "node1";
+            if (networkID == "network1") {
+                host.mIP = "172.17.0.2";
+            } else {
+                host.mIP = "172.18.0.2";
+            }
+            hosts.PushBack(host);
+            return ErrorEnum::eNone;
+        }));
+
+    EXPECT_CALL(*mStorage, GetInstances(_, _, _)).WillRepeatedly(Return(ErrorEnum::eNone));
+    EXPECT_CALL(*mStorage, AddInstance(_)).Times(2);
+
+    EXPECT_CALL(*mDNSServer, GetIP()).WillOnce(Return("8.8.8.8")).WillOnce(Return("1.1.1.1"));
+    EXPECT_CALL(*mDNSServer, UpdateHostsFile(_)).Times(2).WillRepeatedly(Return(ErrorEnum::eNone));
+    EXPECT_CALL(*mDNSServer, Restart()).Times(2).WillRepeatedly(Return(ErrorEnum::eNone));
+
+    auto err = mNetworkManager->Init(*mStorage, *mRandom, *mDNSServer);
+    ASSERT_TRUE(err.IsNone());
+
+    err = mNetworkManager->AllocateInstanceNetwork(instanceIdent1, networkID1, nodeID, *instanceData1, result1);
+    ASSERT_TRUE(err.IsNone());
+
+    err = mNetworkManager->AllocateInstanceNetwork(instanceIdent2, networkID2, nodeID, *instanceData2, result2);
+    ASSERT_TRUE(err.IsNone());
+
+    ASSERT_EQ(result2.mFirewallRules.Size(), 2);
+
+    EXPECT_EQ(result2.mFirewallRules[0].mDstIP, result1.mIP);
+    EXPECT_EQ(result2.mFirewallRules[0].mSrcIP, result2.mIP);
+    EXPECT_EQ(result2.mFirewallRules[0].mProto, "udp");
+    EXPECT_EQ(result2.mFirewallRules[0].mDstPort, "7410:7450");
+
+    EXPECT_EQ(result2.mFirewallRules[1].mProto, "udp");
+    EXPECT_EQ(result2.mFirewallRules[1].mDstPort, "7410");
+}
+
+TEST_F(CMNetworkManagerTest, AllocateInstanceNetwork_MaxExposedPorts)
+{
+    InstanceIdent instanceIdent;
+    instanceIdent.mItemID    = "service1";
+    instanceIdent.mSubjectID = "subject1";
+    instanceIdent.mInstance  = 1;
+
+    String networkID = "network1";
+    String nodeID    = "node1";
+
+    auto instanceData = std::make_unique<UpdateItemNetworkParams>();
+
+    for (size_t i = 0; i < cMaxNumExposedPorts; ++i) {
+        ASSERT_TRUE(instanceData->mExposedPorts.PushBack((std::to_string(7000 + i) + "/udp").c_str()).IsNone());
+    }
+
+    EXPECT_FALSE(instanceData->mExposedPorts.PushBack("9999/udp").IsNone());
+
+    InstanceNetworkAllocation result;
+
+    EXPECT_CALL(*mStorage, GetNetworks(_)).WillOnce(Invoke([](Array<Network>& networks) -> Error {
+        Network network;
+        network.mNetworkID = "network1";
+        network.mSubnet    = "172.17.0.0/16";
+        network.mVlanID    = 1000;
+        networks.PushBack(network);
+        return ErrorEnum::eNone;
+    }));
+
+    EXPECT_CALL(*mStorage, GetHosts(String("network1"), _))
+        .WillOnce(Invoke([](const String&, Array<Host>& hosts) -> Error {
+            Host host;
+            host.mNodeID = "node1";
+            host.mIP     = "172.17.0.2";
+            hosts.PushBack(host);
+            return ErrorEnum::eNone;
+        }));
+
+    EXPECT_CALL(*mStorage, GetInstances(_, _, _)).WillRepeatedly(Return(ErrorEnum::eNone));
+    EXPECT_CALL(*mStorage, AddInstance(_)).Times(1);
+
+    EXPECT_CALL(*mDNSServer, GetIP()).WillOnce(Return("8.8.8.8"));
+    EXPECT_CALL(*mDNSServer, UpdateHostsFile(_)).WillRepeatedly(Return(ErrorEnum::eNone));
+    EXPECT_CALL(*mDNSServer, Restart()).WillRepeatedly(Return(ErrorEnum::eNone));
+
+    auto err = mNetworkManager->Init(*mStorage, *mRandom, *mDNSServer);
+    ASSERT_TRUE(err.IsNone());
+
+    err = mNetworkManager->AllocateInstanceNetwork(instanceIdent, networkID, nodeID, *instanceData, result);
+    EXPECT_TRUE(err.IsNone());
+}
+
 TEST_F(CMNetworkManagerTest, AllocateInstanceNetwork_InvalidExposedPort_Fails)
 {
     InstanceIdent instanceIdent;

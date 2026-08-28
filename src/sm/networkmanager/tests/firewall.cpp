@@ -114,7 +114,8 @@ MATCHER_P2(JumpRule, addrField, target, "")
 
 MATCHER_P2(MasqueradeRule, subnet, oifname, "")
 {
-    return arg.mAction == FWActionEnum::eMasquerade && arg.mSrcAddr == subnet && arg.mOIFName == oifname && arg.mOIFNeg;
+    return arg.mAction == FWActionEnum::eMasquerade && arg.mSrcAddr == subnet && arg.mOIFName == oifname
+        && !arg.mOIFNeg;
 }
 
 MATCHER_P(BaseChainPolicy, policy, "")
@@ -223,9 +224,9 @@ TEST_F(FirewallTest, RemoveOrphansDropsUnknownMasqueradeOnly)
 
     std::vector<FWListedRule> postRules;
     postRules.push_back(
-        {{"10.0.0.0/24", "", "", 0, 0, "br-known", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {40}});
+        {{"10.0.0.0/24", "", "", 0, 0, "eth0", FWActionEnum::eMasquerade, "", false, "", false}, FWRuleHandle {40}});
     postRules.push_back(
-        {{"10.0.1.0/24", "", "", 0, 0, "br-gone", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {41}});
+        {{"10.0.1.0/24", "", "", 0, 0, "eth1", FWActionEnum::eMasquerade, "", false, "", false}, FWRuleHandle {41}});
 
     auto tx = NewMockTx();
 
@@ -241,7 +242,34 @@ TEST_F(FirewallTest, RemoveOrphansDropsUnknownMasqueradeOnly)
     StaticArray<StaticString<cIDLen>, 2> knownInstances;
 
     StaticArray<MasqueradeParams, 2> knownMasquerades;
-    knownMasquerades.PushBack({"10.0.0.0/24", "br-known"});
+    knownMasquerades.PushBack({"10.0.0.0/24", "eth0"});
+
+    EXPECT_TRUE(mFirewall.RemoveOrphans(knownInstances, knownMasquerades).IsNone());
+}
+
+TEST_F(FirewallTest, RemoveOrphansDropsLegacyNegatedMasquerade)
+{
+    std::vector<FWListedRule> forwardRules;
+
+    std::vector<FWListedRule> postRules;
+    postRules.push_back(
+        {{"10.0.0.0/24", "", "", 0, 0, "br-sp1", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {40}});
+
+    auto tx = NewMockTx();
+
+    InSequence seq;
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("forward"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(forwardRules), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("postrouting"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(postRules), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(mBackend, NewTxn()).WillOnce(Return(ByMove(std::move(tx))));
+    EXPECT_CALL(*mTxnPtr, DeleteRuleByHandle(_, std::string("postrouting"), FWRuleHandle {40}));
+    EXPECT_CALL(*mTxnPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
+
+    StaticArray<StaticString<cIDLen>, 2> knownInstances;
+
+    StaticArray<MasqueradeParams, 2> knownMasquerades;
+    knownMasquerades.PushBack({"10.0.0.0/24", "eth0"});
 
     EXPECT_TRUE(mFirewall.RemoveOrphans(knownInstances, knownMasquerades).IsNone());
 }
@@ -252,7 +280,7 @@ TEST_F(FirewallTest, AdoptedMasqueradeIsNotAddedAgain)
 
     std::vector<FWListedRule> postRules;
     postRules.push_back(
-        {{"10.0.0.0/24", "", "", 0, 0, "br-known", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {40}});
+        {{"10.0.0.0/24", "", "", 0, 0, "eth0", FWActionEnum::eMasquerade, "", false, "", false}, FWRuleHandle {40}});
 
     EXPECT_CALL(mBackend, ListChainRules(_, std::string("forward"), _))
         .WillOnce(DoAll(SetArgReferee<2>(forwardRules), Return(ErrorEnum::eNone)));
@@ -263,11 +291,11 @@ TEST_F(FirewallTest, AdoptedMasqueradeIsNotAddedAgain)
     StaticArray<StaticString<cIDLen>, 2> knownInstances;
 
     StaticArray<MasqueradeParams, 2> knownMasquerades;
-    knownMasquerades.PushBack({"10.0.0.0/24", "br-known"});
+    knownMasquerades.PushBack({"10.0.0.0/24", "eth0"});
 
     ASSERT_TRUE(mFirewall.RemoveOrphans(knownInstances, knownMasquerades).IsNone());
 
-    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "br-known").IsNone());
+    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "eth0").IsNone());
 }
 
 TEST_F(FirewallTest, StartFallbackCreatesSkeletonWithForwardPolicyDrop)
@@ -985,10 +1013,28 @@ TEST_F(FirewallTest, AddMasqueradeAddsRule)
     InSequence seq;
     EXPECT_CALL(mBackend, NewTxn()).WillOnce(Return(ByMove(std::move(tx))));
     EXPECT_CALL(*mTxnPtr,
-        AddRule(_, std::string("postrouting"), MasqueradeRule(std::string("10.0.0.0/24"), std::string("br-test"))));
+        AddRule(_, std::string("postrouting"), MasqueradeRule(std::string("10.0.0.0/24"), std::string("eth0"))));
     EXPECT_CALL(*mTxnPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
 
-    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "br-test").IsNone());
+    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "eth0").IsNone());
+}
+
+TEST_F(FirewallTest, AddMasqueradeMatchesUplinkPositively)
+{
+    auto tx = NewMockTx();
+
+    FWRule captured;
+
+    EXPECT_CALL(mBackend, NewTxn()).WillOnce(Return(ByMove(std::move(tx))));
+    EXPECT_CALL(*mTxnPtr, AddRule(_, std::string("postrouting"), _))
+        .WillOnce(DoAll(SaveArg<2>(&captured), Return(ErrorEnum::eNone)));
+    EXPECT_CALL(*mTxnPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
+
+    ASSERT_TRUE(mFirewall.AddMasquerade("172.17.0.0/16", "eth0").IsNone());
+
+    EXPECT_EQ(captured.mOIFName, std::string("eth0"));
+    EXPECT_FALSE(captured.mOIFNeg);
+    EXPECT_EQ(captured.mSrcAddr, std::string("172.17.0.0/16"));
 }
 
 TEST_F(FirewallTest, AddMasqueradeIsIdempotent)
@@ -1000,15 +1046,15 @@ TEST_F(FirewallTest, AddMasqueradeIsIdempotent)
     EXPECT_CALL(*mTxnPtr, AddRule(_, _, _));
     EXPECT_CALL(*mTxnPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
 
-    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "br-test").IsNone());
+    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "eth0").IsNone());
 
-    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "br-test").IsNone());
+    EXPECT_TRUE(mFirewall.AddMasquerade("10.0.0.0/24", "eth0").IsNone());
 }
 
 TEST_F(FirewallTest, RemoveMasqueradeFindsHandleAndDeletes)
 {
     std::vector<FWListedRule> postRules;
-    postRules.push_back({{"10.0.0.0/24", "", "", 0, 0, "br-test", FWActionEnum::eMasquerade, ""}, FWRuleHandle {7}});
+    postRules.push_back({{"10.0.0.0/24", "", "", 0, 0, "eth0", FWActionEnum::eMasquerade, ""}, FWRuleHandle {7}});
 
     auto tx = NewMockTx();
 
@@ -1019,7 +1065,21 @@ TEST_F(FirewallTest, RemoveMasqueradeFindsHandleAndDeletes)
     EXPECT_CALL(*mTxnPtr, DeleteRuleByHandle(_, std::string("postrouting"), FWRuleHandle {7}));
     EXPECT_CALL(*mTxnPtr, Commit()).WillOnce(Return(ErrorEnum::eNone));
 
-    EXPECT_TRUE(mFirewall.RemoveMasquerade("10.0.0.0/24", "br-test").IsNone());
+    EXPECT_TRUE(mFirewall.RemoveMasquerade("10.0.0.0/24", "eth0").IsNone());
+}
+
+TEST_F(FirewallTest, RemoveMasqueradeIgnoresNegatedRule)
+{
+    std::vector<FWListedRule> postRules;
+    postRules.push_back(
+        {{"10.0.0.0/24", "", "", 0, 0, "eth0", FWActionEnum::eMasquerade, "", false, "", true}, FWRuleHandle {7}});
+
+    EXPECT_CALL(mBackend, ListChainRules(_, std::string("postrouting"), _))
+        .WillOnce(DoAll(SetArgReferee<2>(postRules), Return(ErrorEnum::eNone)));
+
+    EXPECT_CALL(mBackend, NewTxn()).Times(0);
+
+    EXPECT_TRUE(mFirewall.RemoveMasquerade("10.0.0.0/24", "eth0").IsNone());
 }
 
 TEST_F(FirewallTest, RemoveMasqueradeNotFoundIsNoOp)
@@ -1031,5 +1091,5 @@ TEST_F(FirewallTest, RemoveMasqueradeNotFoundIsNoOp)
 
     EXPECT_CALL(mBackend, NewTxn()).Times(0);
 
-    EXPECT_TRUE(mFirewall.RemoveMasquerade("10.0.0.0/24", "br-test").IsNone());
+    EXPECT_TRUE(mFirewall.RemoveMasquerade("10.0.0.0/24", "eth0").IsNone());
 }
