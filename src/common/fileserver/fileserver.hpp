@@ -7,8 +7,15 @@
 #ifndef AOS_COMMON_FILESERVER_FILESERVER_HPP_
 #define AOS_COMMON_FILESERVER_FILESERVER_HPP_
 
+#include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+
+#include <Poco/Net/Context.h>
 
 #include <Poco/Net/HTTPRequestHandler.h>
 #include <Poco/Net/HTTPRequestHandlerFactory.h>
@@ -29,12 +36,21 @@ namespace aos::common::fileserver {
 /**
  * Fileserver.
  */
-class Fileserver : public cm::fileserver::FileServerItf {
+class Fileserver : public cm::fileserver::FileServerItf, public aos::iamclient::CertListenerItf {
 public:
+    using SSLContextConfigurator = std::function<Error(SSL_CTX*)>;
+
     /**
-     * Default constructor.
+     * Constructs a fileserver with an optional TLS configurator and retry interval.
+     * Empty configurator selects the IAM-backed implementation.
      */
-    Fileserver() = default;
+    explicit Fileserver(SSLContextConfigurator configureContext = {},
+        std::chrono::milliseconds              retryInterval    = std::chrono::seconds(10));
+
+    /**
+     * Stops the server and certificate subscription.
+     */
+    ~Fileserver();
 
     /**
      * Initializes object instance.
@@ -123,8 +139,29 @@ public:
      */
     Error Stop();
 
+    /**
+     * Schedules certificate reload outside the IAM notification thread.
+     *
+     * @param info updated certificate info.
+     */
+    void OnCertChanged(const CertInfo& info) override;
+
 private:
+    Error ReloadCertificate();
+    Error CreateSSLContext(Poco::Net::Context::Ptr& context);
+    Error StartServer(const Poco::Net::Context::Ptr& context);
+    Error StopServer();
+    void  ProcessCertificateChanges();
+
     static constexpr auto cDefaultPort = 8080;
+
+    SSLContextConfigurator    mConfigureContext;
+    std::chrono::milliseconds mRetryInterval;
+    std::mutex                mMutex;
+    std::condition_variable   mCondVar;
+    std::thread               mCertUpdateThread;
+    bool                      mCertChanged {false};
+    bool                      mShutdown {true};
 
     std::string                            mRootDir;
     std::unique_ptr<Poco::Net::HTTPServer> mServer;
