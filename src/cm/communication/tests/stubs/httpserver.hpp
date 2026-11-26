@@ -7,6 +7,7 @@
 #ifndef AOS_CM_COMMUNICATION_TESTS_STUBS_HTTPSERVER_HPP_
 #define AOS_CM_COMMUNICATION_TESTS_STUBS_HTTPSERVER_HPP_
 
+#include <atomic>
 #include <chrono>
 #include <optional>
 #include <thread>
@@ -152,10 +153,13 @@ public:
      *
      * @param receivedMessages received messages.
      * @param sendMessageQueue message queue for sending messages.
+     * @param ignoreCloseFrame if true, close frames are not answered.
      */
-    WebSocketRequestHandler(MessageQueue& receivedMessages, MessageQueue& sendMessageQueue)
+    WebSocketRequestHandler(
+        MessageQueue& receivedMessages, MessageQueue& sendMessageQueue, const std::atomic_bool& ignoreCloseFrame)
         : mReceivedMessages(receivedMessages)
         , mSendMessageQueue(sendMessageQueue)
+        , mIgnoreCloseFrame(ignoreCloseFrame)
     {
     }
 
@@ -179,7 +183,21 @@ protected:
 
                 LOG_DBG() << "Received WebSocket frame" << aos::Log::Field("size", n) << aos::Log::Field("flags", opts);
 
+                if (n == 0 && flags == 0) {
+                    LOG_DBG() << "WebSocket connection closed by peer";
+
+                    break;
+                }
+
                 if (opts == Poco::Net::WebSocket::FRAME_OP_CLOSE) {
+                    if (mIgnoreCloseFrame) {
+                        LOG_DBG() << "Ignore WebSocket close frame";
+
+                        buffer.resize(0);
+
+                        continue;
+                    }
+
                     mWebSocket->sendFrame(nullptr, 0, flags);
 
                     break;
@@ -227,6 +245,7 @@ private:
 
     MessageQueue&                       mReceivedMessages;
     MessageQueue&                       mSendMessageQueue;
+    const std::atomic_bool&             mIgnoreCloseFrame;
     std::atomic_bool                    mRunning {false};
     std::optional<Poco::Net::WebSocket> mWebSocket;
     std::thread                         mSenderThread;
@@ -242,10 +261,13 @@ public:
      *
      * @param receivedMessages message queue for received messages.
      * @param sendMessageQueue message queue for sending messages.
+     * @param ignoreCloseFrame if true, web socket close frames are not answered.
      */
-    RequestHandlerFactory(MessageQueue& receivedMessages, MessageQueue& sendMessageQueue)
+    RequestHandlerFactory(
+        MessageQueue& receivedMessages, MessageQueue& sendMessageQueue, const std::atomic_bool& ignoreCloseFrame)
         : mReceivedMessages(receivedMessages)
         , mSendMessageQueue(sendMessageQueue)
+        , mIgnoreCloseFrame(ignoreCloseFrame)
     {
     }
 
@@ -258,15 +280,16 @@ public:
     Poco::Net::HTTPRequestHandler* createRequestHandler(const Poco::Net::HTTPServerRequest& request) override
     {
         if (IsWebSocketRequest(request)) {
-            return new WebSocketRequestHandler(mReceivedMessages, mSendMessageQueue);
+            return new WebSocketRequestHandler(mReceivedMessages, mSendMessageQueue, mIgnoreCloseFrame);
         }
 
         return new DiscoveryRequestHandler(mReceivedMessages, mSendMessageQueue);
     }
 
 private:
-    MessageQueue& mReceivedMessages;
-    MessageQueue& mSendMessageQueue;
+    MessageQueue&           mReceivedMessages;
+    MessageQueue&           mSendMessageQueue;
+    const std::atomic_bool& mIgnoreCloseFrame;
 
     bool IsWebSocketRequest(const Poco::Net::HTTPServerRequest& request) const
     {
@@ -304,6 +327,13 @@ public:
     }
 
     /**
+     * Makes the server not answer web socket close frames, as if the answer is lost in the network.
+     *
+     * @param ignore true to ignore close frames.
+     */
+    void SetIgnoreCloseFrame(bool ignore) { mIgnoreCloseFrame = ignore; }
+
+    /**
      * Starts server.
      */
     void Start()
@@ -325,8 +355,8 @@ public:
                 svs.setReuseAddress(false);
                 svs.setReusePort(false);
 
-                mServer.emplace(new RequestHandlerFactory(mReceivedMessageQueue, mSendMessageQueue), svs,
-                    new Poco::Net::HTTPServerParams);
+                mServer.emplace(new RequestHandlerFactory(mReceivedMessageQueue, mSendMessageQueue, mIgnoreCloseFrame),
+                    svs, new Poco::Net::HTTPServerParams);
 
                 started.set();
 
@@ -367,6 +397,7 @@ private:
     std::string                          mCA;
     MessageQueue&                        mReceivedMessageQueue;
     MessageQueue&                        mSendMessageQueue;
+    std::atomic_bool                     mIgnoreCloseFrame {};
     std::thread                          mServerThread;
     std::optional<Poco::Net::HTTPServer> mServer;
 };

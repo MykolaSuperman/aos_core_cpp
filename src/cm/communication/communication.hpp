@@ -8,6 +8,7 @@
 #define AOS_CM_COMMUNICATION_COMMUNICATION_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <fstream>
 #include <mutex>
@@ -201,6 +202,7 @@ private:
     static constexpr auto cOnlineCertificate       = "online";
     static constexpr auto cMaxServiceDiscoveryURLs = 1;
     static constexpr auto cSendTimeoutSec          = 30;
+    static constexpr auto cCloseHandshakeTimeout   = std::chrono::seconds(5);
 
     using SessionPtr                = std::unique_ptr<Poco::Net::HTTPClientSession>;
     using ResponseMessageVariant    = std::variant<BlobURLsInfo>;
@@ -258,6 +260,7 @@ private:
     Error       ConnectToCloud();
     Error       CloseConnection();
     Error       Disconnect();
+    void        AbortConnection();
     Error       ReceiveFrames();
     Error       CheckMessage(const common::utils::CaseInsensitiveObjectWrapper& message, ResponseInfo& info) const;
     void        NotifyConnectionEstablished();

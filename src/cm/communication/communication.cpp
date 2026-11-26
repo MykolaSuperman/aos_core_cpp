@@ -8,6 +8,8 @@
 #include <future>
 #include <variant>
 
+#include <sys/socket.h>
+
 #include <Poco/Net/NetException.h>
 #include <Poco/Net/SSLManager.h>
 
@@ -29,7 +31,6 @@
 #include <common/utils/exception.hpp>
 #include <common/utils/json.hpp>
 #include <common/utils/pkcs11helper.hpp>
-#include <common/utils/retry.hpp>
 
 #include "communication.hpp"
 
@@ -282,7 +283,7 @@ Error Communication::Start()
 Error Communication::Stop()
 {
     {
-        std::lock_guard lock {mMutex};
+        std::unique_lock lock {mMutex};
 
         LOG_DBG() << "Stop communication";
 
@@ -295,6 +296,12 @@ Error Communication::Stop()
         CloseConnection();
 
         mCondVar.notify_all();
+
+        if (!mCondVar.wait_for(lock, cCloseHandshakeTimeout, [this] { return !mWebSocket.has_value(); })) {
+            LOG_WRN() << "Close frame is not answered, abort connection";
+
+            AbortConnection();
+        }
     }
 
     for (auto& thread : mThreadPool) {
@@ -668,6 +675,10 @@ Error Communication::ConnectToCloud()
     {
         std::lock_guard lock {mMutex};
 
+        if (!mIsRunning) {
+            return AOS_ERROR_WRAP(ErrorEnum::eWrongState);
+        }
+
         LOG_DBG() << "Connect to cloud web socket server";
 
         if (!ConnectionInfoIsSet()) {
@@ -756,7 +767,20 @@ Error Communication::Disconnect()
     mWebSocket.reset();
     mClientSession.reset();
 
+    mCondVar.notify_all();
+
     return err;
+}
+
+void Communication::AbortConnection()
+{
+    if (!mWebSocket) {
+        return;
+    }
+
+    if (::shutdown(mWebSocket->impl()->sockfd(), SHUT_RD) != 0) {
+        LOG_ERR() << "Failed to abort connection" << Log::Field(Error(errno));
+    }
 }
 
 void Communication::NotifyConnectionEstablished()
@@ -796,16 +820,33 @@ void Communication::HandleConnection()
 {
     LOG_DBG() << "Start connection handler thread";
 
+    auto retryCount = 0;
+    auto delay      = mReconnectTimeout;
+
     while (mIsRunning) {
-        if (auto err = common::utils::Retry([this]() { return ConnectToCloud(); },
-                [](int retryCount, Duration delay, const aos::Error& err) {
-                    LOG_WRN() << "Connect to cloud failed" << Log::Field("retryCount", retryCount)
-                              << Log::Field("delay", delay) << Log::Field(err);
-                },
-                cReconnectTries, mReconnectTimeout, cMaxReconnectTimeout);
-            !err.IsNone()) {
+        if (auto err = ConnectToCloud(); !err.IsNone()) {
+            if (!mIsRunning) {
+                break;
+            }
+
+            LOG_WRN() << "Connect to cloud failed" << Log::Field("retryCount", ++retryCount)
+                      << Log::Field("delay", delay) << Log::Field(err);
+
+            std::unique_lock lock {mMutex};
+
+            mCondVar.wait_for(lock, std::chrono::nanoseconds(delay.Nanoseconds()), [this] { return !mIsRunning; });
+
+            if (retryCount % cReconnectTries == 0) {
+                delay = mReconnectTimeout;
+            } else if (delay *= 2; delay > cMaxReconnectTimeout) {
+                delay = cMaxReconnectTimeout;
+            }
+
             continue;
         }
+
+        retryCount = 0;
+        delay      = mReconnectTimeout;
 
         if (auto err = ReceiveFrames(); !err.IsNone()) {
             LOG_ERR() << "Failed to receive frames" << Log::Field(err);
